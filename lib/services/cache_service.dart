@@ -14,7 +14,7 @@ import '../models/series_item.dart';
 class CacheService {
   /// Cambia cuando cambia el formato/mosaico de las páginas. Las descargas de
   /// una versión anterior se consideran inválidas y se vuelven a bajar.
-  static const int pageVersion = 2;
+  static const int pageVersion = 3;
 
   static late Box _series;
   static late Box _chapters;
