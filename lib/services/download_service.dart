@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'cache_service.dart';
 import 'reader_service.dart';
 
 class DownloadService {
@@ -16,6 +17,8 @@ class DownloadService {
     bool Function()? isCancelled,
   }) async {
     final session = await reader.openChapter(slug, chapter);
+    await CacheService.clearPageFiles(directory);
+    await CacheService.markDirectory(directory);
     final total = session.handles.length;
     final paths = <String>[];
 

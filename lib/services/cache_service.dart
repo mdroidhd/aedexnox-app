@@ -113,6 +113,30 @@ class CacheService {
     return dir;
   }
 
+  static Future<void> markDirectory(Directory directory) async {
+    await File('${directory.path}/.version').writeAsString('$pageVersion', flush: true);
+  }
+
+  static Future<bool> isDirectoryCurrent(Directory directory) async {
+    final file = File('${directory.path}/.version');
+    if (!await file.exists()) return false;
+    return (await file.readAsString()).trim() == '$pageVersion';
+  }
+
+  static Future<void> clearPageFiles(Directory directory) async {
+    if (!await directory.exists()) return;
+    await for (final entity in directory.list()) {
+      if (entity is File) {
+        final path = entity.path.toLowerCase();
+        if (path.endsWith('.jpg') ||
+            path.endsWith('.png') ||
+            path.endsWith('.webp')) {
+          await entity.delete();
+        }
+      }
+    }
+  }
+
   static Future<void> saveChapter(
     String slug,
     ChapterItem ch,

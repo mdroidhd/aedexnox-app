@@ -85,6 +85,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
         widget.chapter.slug,
       );
 
+      if (!await CacheService.isDirectoryCurrent(directory)) {
+        await CacheService.clearPageFiles(directory);
+        await CacheService.markDirectory(directory);
+      }
+
       _session = session;
       _count = session.handles.length;
       for (var i = 0; i < _count; i++) {
