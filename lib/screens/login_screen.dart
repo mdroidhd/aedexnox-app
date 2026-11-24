@@ -144,6 +144,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final api = AedexApi();
+
+      // Reutiliza las cookies que haya dejado el WebView (Cloudflare, etc.)
+      final webCookies = await CookieManager.instance().getCookies(
+        url: WebUri('https://aedexnox.com'),
+      );
+      final values = <String, String>{};
+      for (final cookie in webCookies) {
+        if (cookie.name.isNotEmpty) values[cookie.name] = cookie.value;
+      }
+      api.http.seedCookies('aedexnox.com', values);
+
       final csrf = await api.csrf();
       final token = await api.login(
         email: email,

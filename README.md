@@ -61,11 +61,21 @@ El sitio bloquea WebViews con el chunk `6800-*.js`:
 - UA con `; wv` o `Version/4.0 ... Chrome`.
 - UA-CH con marca "Google Chrome" y `window.chrome` indefinido.
 
-La pantalla de login usa un UA de Chrome móvil sin `wv`, define `window.chrome` antes de que corra el JS del sitio y quita `X-Requested-With` de `fetch`/XHR. Al pulsar **Listo**, guarda las cookies (incluidas HttpOnly) y pide `/api/auth/session` para el token.
+La app hace el login en **dos fases**, como la extensión de Keiyoushi:
 
-Con sesión, el límite de 3 capítulos desaparece. El pase `ax_rp` sigue siendo por IP y se resuelve igual.
+1. Abre `/auth/login` en un WebView con UA de Chrome móvil sin `wv`, define
+   `window.chrome` antes de que corra el JS del sitio y quita `X-Requested-With`
+   de `fetch`/XHR. El usuario resuelve Cloudflare/Turnstile ahí.
+2. Con el token de Turnstile, pide `/api/auth/csrf` y manda las credenciales
+   desde Dart a `/api/auth/callback/credentials` (sin `X-Requested-With`, que es
+   lo que el servidor rechaza en un WebView). Después lee `/api/auth/session`,
+   guarda las cookies y el `access_token`.
 
-Si el sitio cambia el bloqueo o rechaza el login del WebView, la app sigue funcionando como invitado para los 3 primeros capítulos.
+Con sesión, el límite de 3 capítulos desaparece. El pase `ax_rp` sigue siendo
+por IP y se resuelve igual.
+
+Si el sitio cambia el bloqueo o rechaza el login, la app sigue funcionando como
+invitado para los 3 primeros capítulos.
 
 ## Estructura
 
