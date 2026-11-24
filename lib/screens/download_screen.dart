@@ -81,6 +81,7 @@ class _DownloadScreenState extends State<DownloadScreen> {
 
   final Set<int> _saved = {};
   final Set<int> _requested = {};
+  final Map<int, DateTime> _requestedAt = {};
   final Map<int, List<String>> _chunks = {};
 
   int _total = 0;
@@ -169,6 +170,18 @@ class _DownloadScreenState extends State<DownloadScreen> {
       setState(() => _total = count);
     }
 
+    // Si una extracción se quedó a medias, permitir reintentarla.
+    final now = DateTime.now();
+    for (final i in _requested.toList()) {
+      final at = _requestedAt[i];
+      if (at != null &&
+          now.difference(at).inSeconds > 8 &&
+          !_chunks.containsKey(i)) {
+        _requested.remove(i);
+        _requestedAt.remove(i);
+      }
+    }
+
     // Cargar las páginas perezosas.
     try {
       await _controller!.evaluateJavascript(
@@ -179,6 +192,7 @@ class _DownloadScreenState extends State<DownloadScreen> {
     for (final i in ready) {
       if (_saved.contains(i) || _requested.contains(i)) continue;
       _requested.add(i);
+      _requestedAt[i] = DateTime.now();
       setState(() {
         _status = 'Extrayendo páginas (${_saved.length}/$_total)...';
       });
@@ -188,6 +202,7 @@ class _DownloadScreenState extends State<DownloadScreen> {
         );
       } catch (_) {
         _requested.remove(i);
+        _requestedAt.remove(i);
       }
     }
 
@@ -369,14 +384,15 @@ class _DownloadScreenState extends State<DownloadScreen> {
                   callback: (args) {
                     final i = (args[0] as num).toInt();
                     _requested.remove(i);
+                    _requestedAt.remove(i);
                     return null;
                   },
                 );
               },
               onLoadStop: (controller, url) async {
-                // La página de anuncios puede recargar el lector: permitimos
-                // reintentar las páginas que no llegaron a guardarse.
-                _requested.clear();
+                // La página de anuncios puede recargar el lector. No limpiamos
+                // _requested aquí: una extracción en vuelo se corrompería.
+                // El reintento de páginas perdidas lo hace _tick por tiempo.
               },
             ),
           ),

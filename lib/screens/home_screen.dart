@@ -42,6 +42,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final fresh = await AedexClient.fetchCatalog();
+      if (fresh.isEmpty) {
+        throw Exception('El catálogo vino vacío (posible bloqueo temporal).');
+      }
       await CacheService.saveSeries(fresh);
       if (!mounted) return;
       setState(() {
