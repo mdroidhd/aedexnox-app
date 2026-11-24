@@ -93,7 +93,12 @@ class _SeriesScreenState extends State<SeriesScreen> {
           ],
         ),
       );
-      if (go == true) await _login();
+      if (go == true) {
+        await _login();
+        if (mounted && SessionService.isLoggedIn) {
+          await _open(chapter);
+        }
+      }
       return;
     }
 
