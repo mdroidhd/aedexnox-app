@@ -97,18 +97,18 @@ class _SeriesScreenState extends State<SeriesScreen> {
       return;
     }
 
-    if (chapter.downloaded) {
-      Navigator.of(context).push(
-        MaterialPageRoute(
-          builder: (_) => ReaderScreen(
-            series: widget.item,
-            chapter: chapter,
-          ),
+    // Si no está descargado, el lector pide las páginas conforme se ven.
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ReaderScreen(
+          series: widget.item,
+          chapter: chapter,
         ),
-      );
-      return;
-    }
+      ),
+    );
+  }
 
+  Future<void> _download(ChapterItem chapter) async {
     final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
         builder: (_) => DownloadScreen(
@@ -117,20 +117,7 @@ class _SeriesScreenState extends State<SeriesScreen> {
         ),
       ),
     );
-
-    if (ok != true) return;
-    await _load();
-    if (!mounted) return;
-
-    final updated = _chapters.firstWhere(
-      (c) => c.slug == chapter.slug,
-      orElse: () => chapter,
-    );
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ReaderScreen(series: widget.item, chapter: updated),
-      ),
-    );
+    if (ok == true) await _load();
   }
 
   @override
@@ -253,7 +240,18 @@ class _SeriesScreenState extends State<SeriesScreen> {
                         style: const TextStyle(color: Colors.greenAccent),
                       )
                     : Text(locked ? 'Inicia sesión para leerlo' : 'Sin descargar'),
-                trailing: const Icon(Icons.chevron_right),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!locked)
+                      IconButton(
+                        tooltip: 'Descargar todo',
+                        icon: const Icon(Icons.download_outlined),
+                        onPressed: () => _download(chapter),
+                      ),
+                    const Icon(Icons.chevron_right),
+                  ],
+                ),
                 onTap: () => _open(chapter),
               );
             }),

@@ -10,7 +10,7 @@ El downloader ya **no usa el WebView del lector**: habla directamente con la API
 - **Capítulos** por `/api/backend/mangas/<slug>`.
 - **Descarga directa**: resuelve el Cap proof-of-work, firma las llamadas del lector, obtiene las páginas y las descifra/desordena en Dart.
 - **Lector vertical** con las imágenes ya guardadas, sin conexión.
-- **Caché** en Hive para catálogo/capítulos y archivos PNG para las páginas.
+- **Caché** en Hive para catálogo/capítulos y archivos JPG para las páginas.
 - **Login** en un WebView parcheado para saltar el bloqueo de WebViews del sitio.
 
 ## Requisitos

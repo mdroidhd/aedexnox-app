@@ -237,8 +237,13 @@ class CatalogPage {
 class SystemInfo {
   final String capEndpoint;
   final String capSitekey;
+  final String turnstileSitekey;
 
-  const SystemInfo({required this.capEndpoint, required this.capSitekey});
+  const SystemInfo({
+    required this.capEndpoint,
+    required this.capSitekey,
+    required this.turnstileSitekey,
+  });
 }
 
 class AedexApi {
@@ -300,6 +305,7 @@ class AedexApi {
     return SystemInfo(
       capEndpoint: (data['cap_api_endpoint'] ?? '').toString(),
       capSitekey: (data['cap_sitekey'] ?? '').toString(),
+      turnstileSitekey: (data['turnstile_sitekey'] ?? '').toString(),
     );
   }
 

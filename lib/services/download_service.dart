@@ -40,7 +40,7 @@ class DownloadService {
       }
 
       final file = File(
-        '${directory.path}/${(i + 1).toString().padLeft(3, '0')}.png',
+        '${directory.path}/${(i + 1).toString().padLeft(3, '0')}.jpg',
       );
       await file.writeAsBytes(bytes, flush: true);
       paths.add(file.path);

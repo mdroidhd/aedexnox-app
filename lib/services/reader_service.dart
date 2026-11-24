@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:crypto/crypto.dart' as c;
+import 'package:image/image.dart' as im;
 import 'package:pointycastle/export.dart' as pc;
 import 'package:web_socket_channel/io.dart';
 
@@ -240,16 +242,21 @@ class PageCrypto {
     return out;
   }
 
-  static int javaHash(String value) {
+  static int javaHashBytes(List<int> bytes) {
     var hash = 0;
-    for (final unit in value.codeUnits) {
-      hash = (hash * 31 + unit) & 0xFFFFFFFF;
+    for (final byte in bytes) {
+      hash = (hash * 31 + (byte & 0xFF)) & 0xFFFFFFFF;
     }
     return hash.toSigned(32);
   }
 
-  static List<Slice> slices(String key, int width, int height, int gutter) {
-    final random = _Mulberry32(javaHash(key));
+  static List<Slice> slicesFromKeyBytes(
+    List<int> keyBytes,
+    int width,
+    int height,
+    int gutter,
+  ) {
+    final random = _Mulberry32(javaHashBytes(keyBytes));
     final columns = _boundaries(random, width);
     final rows = _boundaries(random, height);
     final columnOrder = _permutation(random);
@@ -713,12 +720,10 @@ class ReaderService {
         meta?.xor ?? headerXor,
         meta?.cleanLen ?? bytes.length,
       );
-      final key = meta == null
-          ? headerKey
-          : utf8.decode(meta.key, allowMalformed: true);
+      final keyBytes = meta?.key ?? Uint8List.fromList(utf8.encode(headerKey));
       final gutter = meta?.gutter ?? headerGutter;
 
-      return _decodePage(clean, key, gutter);
+      return _decodePage(clean, keyBytes, gutter);
     }
 
     throw ReaderException('No se pudo descargar la página ${index + 1}');
@@ -767,7 +772,62 @@ class ReaderService {
 
   Future<Uint8List> _decodePage(
     Uint8List clean,
-    String key,
+    List<int> keyBytes,
+    int gutter,
+  ) async {
+    // Skia limita las imágenes muy altas (webtoons de 10000 px) y puede
+    // decodificarlas a otra resolución. package:image no tiene ese límite.
+    // Se hace en un isolate para no bloquear la UI.
+    try {
+      return await Isolate.run(
+        () => _decodePageWithImage(clean, keyBytes, gutter),
+      );
+    } catch (_) {}
+
+    return _decodeWithUi(clean, keyBytes, gutter);
+  }
+
+  static Uint8List _decodePageWithImage(
+    Uint8List clean,
+    List<int> keyBytes,
+    int gutter,
+  ) {
+    final decoded = im.decodeImage(clean);
+    if (decoded == null) {
+      throw const ReaderException('No se pudo decodificar la página');
+    }
+    var effectiveGutter = gutter;
+    if (min(decoded.width, decoded.height) - 2 * 8 * effectiveGutter < 200) {
+      effectiveGutter = 0;
+    }
+    final outWidth = decoded.width - 2 * 8 * effectiveGutter;
+    final outHeight = decoded.height - 2 * 8 * effectiveGutter;
+    if (outWidth <= 0 || outHeight <= 0) {
+      throw const ReaderException('Dimensiones de página no válidas');
+    }
+
+    final output = im.Image(width: outWidth, height: outHeight);
+    for (final slice in PageCrypto.slicesFromKeyBytes(
+      keyBytes,
+      outWidth,
+      outHeight,
+      effectiveGutter,
+    )) {
+      final tile = im.copyCrop(
+        decoded,
+        slice.sx,
+        slice.sy,
+        slice.sw,
+        slice.sh,
+      );
+      im.compositeImage(output, tile, dstX: slice.dx, dstY: slice.dy);
+    }
+    return Uint8List.fromList(im.encodeJpg(output, quality: 95));
+  }
+
+  Future<Uint8List> _decodeWithUi(
+    Uint8List clean,
+    List<int> keyBytes,
     int gutter,
   ) async {
     final codec = await ui.instantiateImageCodec(clean);
@@ -795,8 +855,8 @@ class ReaderService {
     final source = byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes);
     final output = Uint8List(outWidth * outHeight * 4);
 
-    for (final slice in PageCrypto.slices(
-      key,
+    for (final slice in PageCrypto.slicesFromKeyBytes(
+      keyBytes,
       outWidth,
       outHeight,
       effectiveGutter,

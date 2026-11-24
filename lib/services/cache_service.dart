@@ -12,6 +12,10 @@ import '../models/series_item.dart';
 /// lista de capítulos viven en Hive; las imágenes viven como archivos WebP en
 /// el directorio privado de la app.
 class CacheService {
+  /// Cambia cuando cambia el formato/mosaico de las páginas. Las descargas de
+  /// una versión anterior se consideran inválidas y se vuelven a bajar.
+  static const int pageVersion = 2;
+
   static late Box _series;
   static late Box _chapters;
   static late Box _pages;
@@ -58,7 +62,15 @@ class CacheService {
     for (final k in _chapters.keys) {
       if (k.toString().startsWith('$slug|')) {
         final v = _chapters.get(k);
-        if (v is Map) out.add(ChapterItem.fromMap(v));
+        if (v is Map) {
+          final item = ChapterItem.fromMap(v);
+          final version = (v['version'] as num?)?.toInt();
+          out.add(
+            item.downloaded && version != pageVersion
+                ? ChapterItem(slug: item.slug, number: item.number)
+                : item,
+          );
+        }
       }
     }
     out.sort((a, b) => a.number.compareTo(b.number));
@@ -76,12 +88,19 @@ class CacheService {
 
   static bool isDownloaded(String slug, String ch) {
     final v = _chapters.get(_key(slug, ch));
-    return v is Map && v['downloaded'] == true;
+    return v is Map &&
+        v['downloaded'] == true &&
+        (v['version'] as num?)?.toInt() == pageVersion;
   }
 
   // ---------------- páginas ----------------
 
   static List<String> getPagePaths(String slug, String ch) {
+    final chapter = _chapters.get(_key(slug, ch));
+    if (chapter is Map &&
+        (chapter['version'] as num?)?.toInt() != pageVersion) {
+      return const [];
+    }
     final v = _pages.get(_key(slug, ch));
     if (v is List) return v.map((e) => e.toString()).toList();
     return const [];
@@ -106,7 +125,8 @@ class CacheService {
       downloaded: true,
       pages: pagePaths.length,
     );
-    await _chapters.put(_key(slug, ch.slug), updated.toMap());
+    final map = updated.toMap()..['version'] = pageVersion;
+    await _chapters.put(_key(slug, ch.slug), map);
   }
 
   // ---------------- mantenimiento ----------------
