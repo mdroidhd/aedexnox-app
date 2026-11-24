@@ -205,6 +205,7 @@ class AedexHttp {
     Uri uri,
     String body, {
     Map<String, String>? headers,
+    bool follow = true,
   }) {
     return send(
       'POST',
@@ -215,8 +216,12 @@ class AedexHttp {
         ...?headers,
       },
       body: utf8.encode(body),
+      follow: follow,
     );
   }
+
+  Map<String, String> exportCookies(String host) =>
+      Map<String, String>.from(_jar[host] ?? const <String, String>{});
 }
 
 class CatalogPage {
@@ -309,6 +314,96 @@ class AedexApi {
           ?.toString();
     } catch (_) {
       return null;
+    }
+  }
+
+  Future<String> csrf() async {
+    final result = await http.get(
+      Uri.parse('$base/api/auth/csrf'),
+      headers: {'Accept': 'application/json'},
+    );
+    if (!result.ok) throw Exception('HTTP ${result.status} en csrf');
+    final data = jsonDecode(result.text) as Map<String, dynamic>;
+    final token = (data['csrfToken'] ?? '').toString();
+    if (token.isEmpty) throw Exception('El sitio no devolvió el CSRF');
+    return token;
+  }
+
+  /// Login NextAuth desde Dart: la verificación de Turnstile se resuelve en un
+  /// WebView, pero el POST de credenciales no sale del WebView, así que el
+  /// sitio no lo rechaza por X-Requested-With.
+  Future<String> login({
+    required String email,
+    required String password,
+    required String csrfToken,
+    required String turnstileToken,
+  }) async {
+    final fields = <String, String>{
+      'csrfToken': csrfToken,
+      'callbackUrl': '$base/',
+      'username': email.trim().toLowerCase(),
+      'password': password,
+      'turnstileToken': turnstileToken,
+    };
+    final body = fields.entries
+        .map(
+          (e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}',
+        )
+        .join('&');
+
+    final result = await http.postForm(
+      Uri.parse('$base/api/auth/callback/credentials'),
+      body,
+      follow: false,
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml',
+        'Origin': base,
+        'Referer': '$base/auth/login',
+        'Upgrade-Insecure-Requests': '1',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-dest': 'document',
+      },
+    );
+
+    final location = result.headers['location'] ?? '';
+    final errorMatch = RegExp(r'[?&]error=([^&]+)').firstMatch(location);
+    if (errorMatch != null) {
+      final code = Uri.decodeQueryComponent(errorMatch.group(1)!);
+      throw Exception(_loginError(code));
+    }
+    if (result.status != 302 && result.status != 303) {
+      if (result.status == 200 && result.text.contains('error=')) {
+        throw Exception(
+          'No se pudo iniciar sesión. Revisa los datos o la verificación.',
+        );
+      }
+      throw Exception('Login HTTP ${result.status}');
+    }
+    if (location.contains('/auth/verify')) {
+      throw Exception('Verifica tu correo en la web de Aedex antes de continuar.');
+    }
+
+    final token = await sessionToken();
+    if (token == null || token.isEmpty) {
+      throw Exception('El sitio no devolvió el token de sesión.');
+    }
+    return token;
+  }
+
+  String _loginError(String code) {
+    switch (code) {
+      case 'CredentialsSignin':
+        return 'Correo o contraseña incorrectos.';
+      case 'EmailNotVerified':
+        return 'Verifica tu correo en la web de Aedex antes de continuar.';
+      case 'WebViewNotAllowed':
+        return 'El sitio rechazó el inicio de sesión. Repite la verificación.';
+      case 'TurnstileFailed':
+        return 'La verificación de Cloudflare falló. Repítela.';
+      default:
+        return 'No se pudo iniciar sesión ($code).';
     }
   }
 
