@@ -1,65 +1,12 @@
-import 'dart:async';
-import 'dart:collection';
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../models/chapter_item.dart';
 import '../models/series_item.dart';
+import '../services/aedex_api.dart';
 import '../services/cache_service.dart';
-
-/// Se inyecta antes de que cargue la página.
-///
-/// 1. Neutraliza los detectores de devtools basados en consola (si no, el
-///    lector muestra "Contenido Protegido" y deja los canvas en blanco).
-/// 2. Expone funciones para consultar el estado y exportar cada canvas.
-const String _initScript = r'''
-(() => {
-  const o = console;
-  const keep = a => (a === null || (typeof a !== 'object' && typeof a !== 'function'));
-  const log = o.log.bind(o);
-  o.log = (...a) => log(...a.map(x => keep(x) ? x : '[blob]'));
-  o.table = () => {};
-  o.clear = () => {};
-  o.dir = () => {};
-
-  window.__aedexInfo = function() {
-    const cs = [...document.querySelectorAll('canvas.manga-page-canvas')];
-    return JSON.stringify({
-      count: cs.length,
-      ready: cs.map((c, i) => (c.width > 500 && !String(c.className).includes('hidden')) ? i : -1).filter(i => i >= 0),
-      text: (document.body.innerText || '').slice(0, 300),
-      url: location.href
-    });
-  };
-
-  window.__aedexScroll = function(dy) { window.scrollBy(0, dy || 1200); };
-
-  window.__aedexGrabSend = function(i) {
-    const cs = document.querySelectorAll('canvas.manga-page-canvas');
-    const c = cs[i];
-    if (!c || c.width < 500) {
-      window.flutter_inappwebview.callHandler('aedexPageError', i, 'not-ready');
-      return;
-    }
-    const t = document.createElement('canvas');
-    t.width = c.width;
-    t.height = c.height;
-    t.getContext('2d').drawImage(c, 0, 0);
-    const d = t.toDataURL('image/webp', 0.95);
-    const b64 = d.split(',')[1] || '';
-    const CH = 200000;
-    const n = Math.ceil(b64.length / CH) || 1;
-    window.flutter_inappwebview.callHandler('aedexPageStart', i, n);
-    for (let k = 0; k < n; k++) {
-      window.flutter_inappwebview.callHandler('aedexPageChunk', i, k, b64.slice(k * CH, (k + 1) * CH));
-    }
-    window.flutter_inappwebview.callHandler('aedexPageEnd', i);
-  };
-})();
-''';
+import '../services/download_service.dart';
+import '../services/reader_service.dart';
+import 'login_screen.dart';
 
 class DownloadScreen extends StatefulWidget {
   final SeriesItem series;
@@ -76,332 +23,170 @@ class DownloadScreen extends StatefulWidget {
 }
 
 class _DownloadScreenState extends State<DownloadScreen> {
-  InAppWebViewController? _controller;
-  Timer? _poll;
-
-  final Set<int> _saved = {};
-  final Set<int> _requested = {};
-  final Map<int, DateTime> _requestedAt = {};
-  final Map<int, List<String>> _chunks = {};
-
+  int _done = 0;
   int _total = 0;
-  bool _finished = false;
-  bool _captchaHint = false;
-  String _status = 'Cargando lector...';
+  bool _running = true;
+  bool _cancelled = false;
+  bool _needsLogin = false;
+  String _status = 'Preparando el lector...';
   String? _error;
-  late DateTime _started;
 
   @override
   void initState() {
     super.initState();
-    _started = DateTime.now();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _startPolling());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _start());
   }
 
-  void _startPolling() {
-    _poll?.cancel();
-    _poll = Timer.periodic(const Duration(milliseconds: 900), (_) => _tick());
-  }
-
-  Future<void> _tick() async {
-    if (_finished || _controller == null) return;
-
-    if (DateTime.now().difference(_started).inSeconds > 150) {
-      _finish(
-        success: _saved.isNotEmpty,
-        message: _saved.isEmpty ? 'Tiempo de espera agotado' : null,
-      );
-      return;
-    }
-
-    dynamic raw;
-    try {
-      raw = await _controller!.evaluateJavascript(
-        source: 'window.__aedexInfo ? window.__aedexInfo() : ""',
-      );
-    } catch (_) {
-      return;
-    }
-
-    final info = _parseInfo(raw);
-    if (info == null) return;
-
-    final count = (info['count'] as num?)?.toInt() ?? 0;
-    final ready = ((info['ready'] as List?) ?? const [])
-        .map((e) => (e as num).toInt())
-        .toList();
-    final text = (info['text'] ?? '').toString();
-
-    if (text.contains('Verificación anti-bot') && !_captchaHint) {
-      setState(() {
-        _captchaHint = true;
-        _status = 'Toca la casilla de Cloudflare en la página';
-      });
-    }
-
-    if (count == 0) {
-      // Intentar pulsar el widget de Turnstile (si el navegador lo permite).
-      try {
-        await _controller!.evaluateJavascript(source: '''
-          (function(){
-            const inp = document.querySelector('input[name=cf-turnstile-response]');
-            if (!inp) return;
-            let n = inp;
-            for (let i = 0; i < 8 && n; i++) {
-              const r = n.getBoundingClientRect();
-              if (r.width >= 250 && r.width <= 340 && r.height >= 55 && r.height <= 90) {
-                const el = document.elementFromPoint(r.x + 28, r.y + r.height / 2);
-                if (el) {
-                  el.dispatchEvent(new MouseEvent('click', {
-                    bubbles: true, clientX: r.x + 28, clientY: r.y + r.height / 2
-                  }));
-                }
-                break;
-              }
-              n = n.parentElement;
-            }
-          })();
-        ''');
-      } catch (_) {}
-      return;
-    }
-
-    if (count != _total) {
-      setState(() => _total = count);
-    }
-
-    // Si una extracción se quedó a medias, permitir reintentarla.
-    final now = DateTime.now();
-    for (final i in _requested.toList()) {
-      final at = _requestedAt[i];
-      if (at != null &&
-          now.difference(at).inSeconds > 8 &&
-          !_chunks.containsKey(i)) {
-        _requested.remove(i);
-        _requestedAt.remove(i);
-      }
-    }
-
-    // Cargar las páginas perezosas.
-    try {
-      await _controller!.evaluateJavascript(
-        source: 'window.__aedexScroll && window.__aedexScroll(1200)',
-      );
-    } catch (_) {}
-
-    for (final i in ready) {
-      if (_saved.contains(i) || _requested.contains(i)) continue;
-      _requested.add(i);
-      _requestedAt[i] = DateTime.now();
-      setState(() {
-        _status = 'Extrayendo páginas (${_saved.length}/$_total)...';
-      });
-      try {
-        await _controller!.evaluateJavascript(
-          source: 'window.__aedexGrabSend($i)',
-        );
-      } catch (_) {
-        _requested.remove(i);
-        _requestedAt.remove(i);
-      }
-    }
-
-    if (_total > 0 && _saved.length >= _total && !_finished) {
-      await _finish(success: true);
-    }
-  }
-
-  Map<String, dynamic>? _parseInfo(dynamic raw) {
-    if (raw == null) return null;
-    var s = raw.toString();
-    try {
-      dynamic v = jsonDecode(s);
-      if (v is String) v = jsonDecode(v);
-      if (v is Map) return Map<String, dynamic>.from(v);
-    } catch (_) {}
-    return null;
-  }
-
-  Future<void> _finish({required bool success, String? message}) async {
-    if (_finished) return;
-    _finished = true;
-    _poll?.cancel();
-
-    if (!success) {
-      if (mounted) {
-        setState(() => _error = message ?? 'No se pudo preparar el capítulo');
-      }
-      return;
-    }
+  Future<void> _start() async {
+    if (!mounted) return;
+    setState(() {
+      _running = true;
+      _cancelled = false;
+      _needsLogin = false;
+      _error = null;
+      _done = 0;
+      _total = 0;
+      _status = 'Preparando el lector...';
+    });
 
     try {
-      final dir = await CacheService.chapterDir(
+      final api = AedexApi();
+      final service = DownloadService(ReaderService(api));
+      final directory = await CacheService.chapterDir(
         widget.series.slug,
         widget.chapter.slug,
       );
-      final indices = _saved.toList()..sort();
-      final paths = indices
-          .map((i) => '${dir.path}/${(i + 1).toString().padLeft(3, '0')}.webp')
-          .toList();
+
+      final paths = await service.download(
+        slug: widget.series.slug,
+        chapter: widget.chapter.slug,
+        directory: directory,
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _done = done;
+            _total = total;
+            _status = 'Descargando $done/$total páginas...';
+          });
+        },
+        isCancelled: () => _cancelled,
+      );
+
+      if (paths.isEmpty) {
+        throw const ReaderException('No se descargó ninguna página');
+      }
+
       await CacheService.saveChapter(
         widget.series.slug,
         widget.chapter,
         paths,
       );
+
       if (!mounted) return;
       Navigator.of(context).pop(true);
-    } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+    } on LoginRequiredException {
+      if (!mounted) return;
+      setState(() {
+        _running = false;
+        _needsLogin = true;
+        _status = 'Necesitas iniciar sesión para leer más de 3 capítulos.';
+      });
+    } on ReaderSessionExpired {
+      if (!mounted) return;
+      setState(() {
+        _running = false;
+        _error = 'La sesión del lector caducó. Vuelve a intentarlo.';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _running = false;
+        _error = error.toString();
+      });
+    }
+  }
+
+  Future<void> _login() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+    );
+    if (ok == true && mounted) {
+      _start();
     }
   }
 
   @override
-  void dispose() {
-    _poll?.cancel();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final url =
-        'https://aedexnox.com/comic/${widget.series.slug}/${widget.chapter.slug}?modo=gratis';
+    final progress = _total == 0 ? null : (_done / _total).clamp(0.0, 1.0).toDouble();
 
     return Scaffold(
       appBar: AppBar(
         title: Text('Capítulo ${widget.chapter.number}'),
-      ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            color: const Color(0xFF151520),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: Text(
-              _error ?? _status,
-              style: TextStyle(
-                fontSize: 13,
-                color: _error != null ? Colors.redAccent : Colors.white70,
-              ),
+        actions: [
+          if (_running)
+            TextButton(
+              onPressed: () => setState(() => _cancelled = true),
+              child: const Text('Cancelar'),
             ),
-          ),
-          if (_captchaHint)
-            Container(
-              width: double.infinity,
-              color: const Color(0xFFFF3563).withOpacity(0.15),
-              padding: const EdgeInsets.all(10),
-              child: const Text(
-                'Si aparece "Verificación anti-bot", toca la casilla de Cloudflare '
-                'en la página. La descarga sigue sola después.',
-                style: TextStyle(fontSize: 12),
-              ),
-            ),
-          Expanded(
-            child: InAppWebView(
-              initialUrlRequest: URLRequest(url: WebUri(url)),
-              initialSettings: InAppWebViewSettings(
-                userAgent:
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                    '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                useWideViewPort: true,
-                loadsImagesAutomatically: true,
-                javaScriptEnabled: true,
-                domStorageEnabled: true,
-                thirdPartyCookiesEnabled: true,
-                mediaPlaybackRequiresUserGesture: false,
-              ),
-              initialUserScripts: UnmodifiableListView<UserScript>([
-                UserScript(
-                  source: _initScript,
-                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                ),
-              ]),
-              onWebViewCreated: (controller) {
-                _controller = controller;
-
-                controller.addJavaScriptHandler(
-                  handlerName: 'aedexPageStart',
-                  callback: (args) {
-                    final i = (args[0] as num).toInt();
-                    final n = (args[1] as num).toInt();
-                    _chunks[i] = List<String>.filled(n, '');
-                    return null;
-                  },
-                );
-
-                controller.addJavaScriptHandler(
-                  handlerName: 'aedexPageChunk',
-                  callback: (args) {
-                    final i = (args[0] as num).toInt();
-                    final k = (args[1] as num).toInt();
-                    final data = args[2].toString();
-                    final list = _chunks[i];
-                    if (list != null && k >= 0 && k < list.length) {
-                      list[k] = data;
-                    }
-                    return null;
-                  },
-                );
-
-                controller.addJavaScriptHandler(
-                  handlerName: 'aedexPageEnd',
-                  callback: (args) async {
-                    final i = (args[0] as num).toInt();
-                    final list = _chunks.remove(i);
-                    if (list == null) return null;
-
-                    try {
-                      final dir = await CacheService.chapterDir(
-                        widget.series.slug,
-                        widget.chapter.slug,
-                      );
-                      final file = File(
-                        '${dir.path}/${(i + 1).toString().padLeft(3, '0')}.webp',
-                      );
-                      await file.writeAsBytes(
-                        base64Decode(list.join()),
-                        flush: true,
-                      );
-                      _saved.add(i);
-                      if (mounted) setState(() {});
-                      if (_total > 0 &&
-                          _saved.length >= _total &&
-                          !_finished) {
-                        await _finish(success: true);
-                      }
-                    } catch (e) {
-                      if (mounted) {
-                        setState(() {
-                          _error = 'Error guardando página ${i + 1}: $e';
-                        });
-                      }
-                    }
-                    return null;
-                  },
-                );
-
-                controller.addJavaScriptHandler(
-                  handlerName: 'aedexPageError',
-                  callback: (args) {
-                    final i = (args[0] as num).toInt();
-                    _requested.remove(i);
-                    _requestedAt.remove(i);
-                    return null;
-                  },
-                );
-              },
-              onLoadStop: (controller, url) async {
-                // La página de anuncios puede recargar el lector. No limpiamos
-                // _requested aquí: una extracción en vuelo se corrompería.
-                // El reintento de páginas perdidas lo hace _tick por tiempo.
-              },
-            ),
-          ),
-          LinearProgressIndicator(
-            value: _total == 0
-                ? null
-                : (_saved.length / _total).clamp(0.0, 1.0).toDouble(),
-          ),
         ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Icon(
+              _error != null
+                  ? Icons.error_outline
+                  : _needsLogin
+                      ? Icons.lock_outline
+                      : Icons.downloading,
+              size: 64,
+              color: _error != null ? Colors.redAccent : const Color(0xFFFF3563),
+            ),
+            const SizedBox(height: 20),
+            Text(
+              _status,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 15),
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+              ),
+            ],
+            const SizedBox(height: 24),
+            if (_running)
+              LinearProgressIndicator(value: progress)
+            else if (_needsLogin)
+              FilledButton.icon(
+                onPressed: _login,
+                icon: const Icon(Icons.login),
+                label: const Text('Iniciar sesión'),
+              )
+            else
+              FilledButton.icon(
+                onPressed: _start,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reintentar'),
+              ),
+            if (_running) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Descarga directa, sin WebView ni anuncios',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.white.withOpacity(0.4),
+                ),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

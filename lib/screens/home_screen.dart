@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 
 import '../models/series_item.dart';
-import '../services/aedex_client.dart';
+import '../services/aedex_api.dart';
 import '../services/cache_service.dart';
+import '../services/session_service.dart';
 import '../widgets/series_card.dart';
+import 'login_screen.dart';
 import 'series_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -14,8 +16,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  List<SeriesItem> _items = [];
+  final List<SeriesItem> _items = [];
+  int _page = 1;
+  int _totalPages = 1;
   bool _loading = true;
+  bool _loadingMore = false;
   String? _error;
   String _query = '';
 
@@ -29,7 +34,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final cached = CacheService.getSeries();
     if (cached.isNotEmpty && !force) {
       setState(() {
-        _items = cached;
+        _items
+          ..clear()
+          ..addAll(cached);
         _loading = false;
       });
       return;
@@ -41,14 +48,18 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
-      final fresh = await AedexClient.fetchCatalog();
-      if (fresh.isEmpty) {
+      final page = await AedexApi().catalog(page: 1, limit: 50);
+      if (page.items.isEmpty) {
         throw Exception('El catálogo vino vacío (posible bloqueo temporal).');
       }
-      await CacheService.saveSeries(fresh);
+      await CacheService.saveSeries(page.items);
       if (!mounted) return;
       setState(() {
-        _items = fresh;
+        _items
+          ..clear()
+          ..addAll(page.items);
+        _page = 1;
+        _totalPages = page.totalPages;
         _loading = false;
       });
     } catch (e) {
@@ -56,9 +67,38 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _error = 'No se pudo cargar el catálogo.\n$e';
         _loading = false;
-        _items = cached;
+        if (_items.isEmpty) _items.addAll(cached);
       });
     }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || _page >= _totalPages) return;
+    setState(() => _loadingMore = true);
+    try {
+      final page = await AedexApi().catalog(page: _page + 1, limit: 50);
+      if (!mounted) return;
+      setState(() {
+        _items.addAll(page.items);
+        _page += 1;
+        _totalPages = page.totalPages;
+        _loadingMore = false;
+      });
+      await CacheService.saveSeries(_items);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudieron cargar más: $e')),
+      );
+    }
+  }
+
+  Future<void> _account() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+    );
+    if (ok == true && mounted) setState(() {});
   }
 
   @override
@@ -81,6 +121,16 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         actions: [
+          IconButton(
+            tooltip: SessionService.isLoggedIn ? 'Cuenta' : 'Iniciar sesión',
+            icon: Icon(
+              SessionService.isLoggedIn ? Icons.person : Icons.login,
+              color: SessionService.isLoggedIn
+                  ? const Color(0xFFFF3563)
+                  : Colors.white70,
+            ),
+            onPressed: _account,
+          ),
           IconButton(
             tooltip: 'Actualizar catálogo',
             icon: const Icon(Icons.refresh),
@@ -135,7 +185,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               )
-            else
+            else ...[
               SliverPadding(
                 padding: const EdgeInsets.all(12),
                 sliver: SliverGrid(
@@ -158,6 +208,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 24),
+                  child: Center(
+                    child: _loadingMore
+                        ? const CircularProgressIndicator()
+                        : _page < _totalPages && _query.isEmpty
+                            ? TextButton.icon(
+                                onPressed: _loadMore,
+                                icon: const Icon(Icons.expand_more),
+                                label: const Text('Cargar más'),
+                              )
+                            : const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),

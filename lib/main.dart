@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
 import 'services/cache_service.dart';
+import 'services/session_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await CacheService.init();
+  await SessionService.init();
   runApp(const AedexApp());
 }
 

@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 
 import '../models/chapter_item.dart';
 import '../models/series_item.dart';
-import '../services/aedex_client.dart';
+import '../services/aedex_api.dart';
 import '../services/cache_service.dart';
+import '../services/session_service.dart';
 import 'download_screen.dart';
+import 'login_screen.dart';
 import 'reader_screen.dart';
 
 class SeriesScreen extends StatefulWidget {
@@ -44,7 +46,7 @@ class _SeriesScreenState extends State<SeriesScreen> {
     });
 
     try {
-      final fresh = await AedexClient.fetchChapters(widget.item.slug);
+      final fresh = await AedexApi().chapters(widget.item.slug);
       await CacheService.saveChapters(widget.item.slug, fresh);
       final merged = CacheService.getChapters(widget.item.slug);
       if (!mounted) return;
@@ -62,11 +64,46 @@ class _SeriesScreenState extends State<SeriesScreen> {
     }
   }
 
-  Future<void> _open(ChapterItem ch) async {
-    if (ch.downloaded) {
+  Future<void> _login() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+    );
+    if (ok == true && mounted) setState(() {});
+  }
+
+  Future<void> _open(ChapterItem chapter) async {
+    if (chapter.number > 3 && !SessionService.isLoggedIn) {
+      final go = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Inicia sesión'),
+          content: const Text(
+            'Como invitado solo se pueden leer los 3 primeros capítulos. '
+            'Inicia sesión con una cuenta gratuita para seguir.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Ahora no'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Iniciar sesión'),
+            ),
+          ],
+        ),
+      );
+      if (go == true) await _login();
+      return;
+    }
+
+    if (chapter.downloaded) {
       Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => ReaderScreen(series: widget.item, chapter: ch),
+          builder: (_) => ReaderScreen(
+            series: widget.item,
+            chapter: chapter,
+          ),
         ),
       );
       return;
@@ -74,7 +111,10 @@ class _SeriesScreenState extends State<SeriesScreen> {
 
     final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute(
-        builder: (_) => DownloadScreen(series: widget.item, chapter: ch),
+        builder: (_) => DownloadScreen(
+          series: widget.item,
+          chapter: chapter,
+        ),
       ),
     );
 
@@ -83,8 +123,8 @@ class _SeriesScreenState extends State<SeriesScreen> {
     if (!mounted) return;
 
     final updated = _chapters.firstWhere(
-      (c) => c.slug == ch.slug,
-      orElse: () => ch,
+      (c) => c.slug == chapter.slug,
+      orElse: () => chapter,
     );
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -120,7 +160,7 @@ class _SeriesScreenState extends State<SeriesScreen> {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(10),
                         child: CachedNetworkImage(
-                          imageUrl: AedexClient.coverUrl(widget.item.coverPath),
+                          imageUrl: AedexApi.coverUrl(widget.item.coverPath),
                           fit: BoxFit.cover,
                           placeholder: (_, __) =>
                               Container(color: const Color(0xFF171722)),
@@ -149,6 +189,14 @@ class _SeriesScreenState extends State<SeriesScreen> {
                           '${_chapters.length} capítulos',
                           style: const TextStyle(color: Colors.white70),
                         ),
+                        if (!SessionService.isLoggedIn) ...[
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: _login,
+                            icon: const Icon(Icons.login, size: 16),
+                            label: const Text('Iniciar sesión'),
+                          ),
+                        ],
                         if (widget.item.description.isNotEmpty) ...[
                           const SizedBox(height: 8),
                           Text(
@@ -181,28 +229,34 @@ class _SeriesScreenState extends State<SeriesScreen> {
                   style: const TextStyle(color: Colors.redAccent),
                 ),
               ),
-            ..._chapters.map(
-              (ch) => ListTile(
+            ..._chapters.map((chapter) {
+              final locked =
+                  chapter.number > 3 && !SessionService.isLoggedIn;
+              return ListTile(
                 leading: CircleAvatar(
-                  backgroundColor: ch.downloaded
+                  backgroundColor: chapter.downloaded
                       ? const Color(0xFFFF3563)
                       : const Color(0xFF1E1E2A),
                   child: Icon(
-                    ch.downloaded ? Icons.download_done : Icons.menu_book,
+                    locked
+                        ? Icons.lock_outline
+                        : chapter.downloaded
+                            ? Icons.download_done
+                            : Icons.menu_book,
                     size: 18,
                   ),
                 ),
-                title: Text('Capítulo ${ch.number}'),
-                subtitle: ch.downloaded
+                title: Text('Capítulo ${chapter.number}'),
+                subtitle: chapter.downloaded
                     ? Text(
-                        '${ch.pages} páginas · offline',
+                        '${chapter.pages} páginas · offline',
                         style: const TextStyle(color: Colors.greenAccent),
                       )
-                    : const Text('Sin descargar'),
+                    : Text(locked ? 'Inicia sesión para leerlo' : 'Sin descargar'),
                 trailing: const Icon(Icons.chevron_right),
-                onTap: () => _open(ch),
-              ),
-            ),
+                onTap: () => _open(chapter),
+              );
+            }),
             const SizedBox(height: 24),
           ],
         ),

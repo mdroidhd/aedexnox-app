@@ -19,6 +19,13 @@ class ChapterItem {
         'pages': pages,
       };
 
+  factory ChapterItem.fromApi(Map<String, dynamic> m) {
+    final value = m['numero'];
+    final number = value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+    final slug = number.toString().replaceFirst(RegExp(r'\.0$'), '');
+    return ChapterItem(slug: slug, number: number);
+  }
+
   factory ChapterItem.fromMap(Map<dynamic, dynamic> m) => ChapterItem(
         slug: (m['slug'] ?? '').toString(),
         number: (m['number'] is num)

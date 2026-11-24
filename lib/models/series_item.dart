@@ -19,6 +19,13 @@ class SeriesItem {
         'description': description,
       };
 
+  factory SeriesItem.fromApi(Map<String, dynamic> m) => SeriesItem(
+        slug: (m['slug'] ?? '').toString(),
+        title: (m['nombre'] ?? '').toString(),
+        coverPath: (m['portada_url'] ?? '').toString(),
+        description: (m['descripcion'] ?? '').toString(),
+      );
+
   factory SeriesItem.fromMap(Map<dynamic, dynamic> m) => SeriesItem(
         slug: (m['slug'] ?? '').toString(),
         title: (m['title'] ?? '').toString(),

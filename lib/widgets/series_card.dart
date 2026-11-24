@@ -2,7 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../models/series_item.dart';
-import '../services/aedex_client.dart';
+import '../services/aedex_api.dart';
 
 class SeriesCard extends StatelessWidget {
   final SeriesItem item;
@@ -22,7 +22,7 @@ class SeriesCard extends StatelessWidget {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: CachedNetworkImage(
-                imageUrl: AedexClient.coverUrl(item.coverPath),
+                imageUrl: AedexApi.coverUrl(item.coverPath),
                 fit: BoxFit.cover,
                 width: double.infinity,
                 placeholder: (_, __) => Container(

@@ -1,29 +1,22 @@
 # Aedexnox App
 
-App Flutter (Android/iOS) para navegar el catálogo de **aedexnox.com**, ver las portadas, abrir la lista de capítulos y **leer los capítulos completos en vertical desde el móvil**, con las páginas guardadas en local.
+App Flutter (Android/iOS) para navegar el catálogo de **aedexnox.com**, ver portadas, abrir capítulos y **leerlos en vertical desde el móvil**, con las páginas guardadas en local.
 
-> Código listo para compilar. No incluye las carpetas `android/` ni `ios/`; se generan con `flutter create`.
+El downloader ya **no usa el WebView del lector**: habla directamente con la API y el protocolo firmado del sitio. El WebView queda solo para el login.
 
 ## Qué hace
 
-- **Catálogo**: lee `/comics` y muestra las series en una cuadrícula con portada, título y buscador local.
-- **Ficha de serie**: lista los capítulos (incluidos los decimales tipo `8.5`).
-- **Descarga de capítulo**: abre un `WebView` en la página del capítulo, deja que el lector monte el canvas y extrae cada página a un WebP local.
-- **Lector vertical**: muestra las páginas guardadas con scroll vertical, sin volver a pedir nada a la web.
-- **Caché**: Hive para catálogo/capítulos y archivos en el directorio privado de la app para las imágenes.
-- **Anti-baneo**: pausa entre peticiones, catálogo y capítulos cacheados, y las páginas solo se piden una vez.
+- **Catálogo** por la API interna (`/api/backend/mangas`), con portadas, buscador y paginación.
+- **Capítulos** por `/api/backend/mangas/<slug>`.
+- **Descarga directa**: resuelve el Cap proof-of-work, firma las llamadas del lector, obtiene las páginas y las descifra/desordena en Dart.
+- **Lector vertical** con las imágenes ya guardadas, sin conexión.
+- **Caché** en Hive para catálogo/capítulos y archivos PNG para las páginas.
+- **Login** en un WebView parcheado para saltar el bloqueo de WebViews del sitio.
 
 ## Requisitos
 
 - Flutter 3.32 o superior (Dart 3.8+).
 - Android 5.0+ / iOS 12+.
-- Conexión a internet solo para la primera carga del catálogo y para descargar capítulos nuevos.
-
-## Nota sobre Android / AGP
-
-La versión estable de `flutter_inappwebview` (6.1.5) falla con AGP 8.9+ porque usa
-`proguard-android.txt`. Este proyecto usa `6.2.0-beta.3`, que ya trae
-`proguard-android-optimize.txt` y el arreglo para AGP 9.
 
 ## Puesta en marcha
 
@@ -38,63 +31,74 @@ flutter pub get
 flutter run
 ```
 
-Si `flutter create` se queja porque la carpeta no está vacía, ignóralo: solo crea lo que falta. Si sobrescribe `pubspec.yaml` o `lib/`, recupera los archivos del repo:
+O usa `./setup.sh`.
 
-```bash
-git checkout -- pubspec.yaml lib analysis_options.yaml test
-flutter pub get
-```
+## Nota sobre Android / AGP
 
-## Uso
+La versión estable de `flutter_inappwebview` (6.1.5) falla con AGP 8.9+ porque usa
+`proguard-android.txt`. Este proyecto usa `6.2.0-beta.3`, que ya trae
+`proguard-android-optimize.txt` y el arreglo para AGP 9.
 
-1. Abre la app. La primera vez descarga el catálogo (puede tardar unos segundos).
-2. Toca una serie para ver sus capítulos.
-3. Toca un capítulo sin descargar. Se abre el lector en un WebView.
-4. Si aparece **"Verificación anti-bot"**, toca la casilla de Cloudflare en la página. Es la única interacción manual; después la app extrae las páginas sola.
-5. Cuando termina, se abre el lector vertical con las imágenes ya guardadas.
-6. Los capítulos descargados aparecen con el icono rojo y se pueden leer sin conexión.
+## Cómo funciona la descarga
+
+1. **Catálogo/capítulos**: API `/api/backend` con `System: aedex` y `X-FK-Sistema: 1`.
+2. **Ficha del capítulo**: de `#aedex-reader-vault` salen `data-t` y `data-s`; con ellos se deriva el firmante `ax`.
+3. **Pase de lector**: se resuelve el **Cap proof-of-work** de `/api/backend/system` (FNV-1a + xorshift32 + SHA-256), se canjea y se pide `/lector/pase` → cookie `ax_rp`.
+4. **Apertura**: `POST /lector/capitulo` con una clave ECDSA P-256 (`X-Catharsis-Ws-Pub`) y los headers `ax-build`/`ax-sig`.
+5. **Cuenta atrás**: WebSocket `/ws/free-reader`; cada reto se firma con la clave ECDSA (raw r||s) y al final llega `redirect_url` + `redirect_data`.
+6. **Lector**: se hace el POST al ad-gate y se lee el HTML; de ahí salen `data-seed` y `window.readerContext` (`t`, `h`, `now`, `pages`). Se deriva el firmante `bv`.
+7. **Token de vida**: `POST /lector/<vivo>/` con `{h}`; dura 45 s y se renueva.
+8. **Páginas**: `GET /lector/p/<handle>/?q=hq` con `bv-build`, `bv-sig` y `bv-live`.
+9. **Imagen**: el sitio añade un **trailer** al final con la clave real, el XOR y el gutter, enmascarado con `sha256(t:m0:handle)` y `sha256(t:m1:handle)`. Se desenmascara, se aplica XOR y se reconstruye el mosaico 8×8 con el PRNG mulberry32 (semilla = hash Java de la clave).
+10. Se guarda como PNG y se apunta en Hive.
+
+Las páginas quedan a resolución completa (1128×1600) y sin el recorte `?hp=1` que daba el sitio.
+
+## Login
+
+El sitio bloquea WebViews con el chunk `6800-*.js`:
+
+- UA con `; wv` o `Version/4.0 ... Chrome`.
+- UA-CH con marca "Google Chrome" y `window.chrome` indefinido.
+
+La pantalla de login usa un UA de Chrome móvil sin `wv`, define `window.chrome` antes de que corra el JS del sitio y quita `X-Requested-With` de `fetch`/XHR. Al pulsar **Listo**, guarda las cookies (incluidas HttpOnly) y pide `/api/auth/session` para el token.
+
+Con sesión, el límite de 3 capítulos desaparece. El pase `ax_rp` sigue siendo por IP y se resuelve igual.
+
+Si el sitio cambia el bloqueo o rechaza el login del WebView, la app sigue funcionando como invitado para los 3 primeros capítulos.
 
 ## Estructura
 
 ```
 lib/
-  main.dart                 Arranque + tema
+  main.dart
   models/
     series_item.dart
     chapter_item.dart
   services/
-    aedex_client.dart       Catálogo y capítulos por HTTP
-    cache_service.dart      Hive + archivos locales
+    aedex_api.dart        HTTP, cookies, API y /system
+    reader_service.dart   Cap, ECDSA, WebSocket, trailer y mosaico
+    download_service.dart Orquesta la descarga de un capítulo
+    cache_service.dart    Hive + archivos
+    session_service.dart  Cookies y token
   screens/
-    home_screen.dart        Cuadrícula del catálogo
-    series_screen.dart      Ficha y capítulos
-    download_screen.dart    WebView + extracción de canvas
-    reader_screen.dart      Lectura vertical offline
+    home_screen.dart
+    series_screen.dart
+    download_screen.dart
+    login_screen.dart
+    reader_screen.dart
   widgets/
     series_card.dart
 ```
 
-## Cómo funciona la extracción
-
-El lector de la web no expone imágenes normales: monta cada página en un `<canvas>` y las protege con detección de devtools y trampas de copia.
-
-La app:
-
-1. Inyecta un script al inicio del documento que neutraliza los detectores basados en consola.
-2. Espera a que existan los `canvas.manga-page-canvas`.
-3. Hace scroll para que se carguen las páginas perezosas.
-4. Por cada canvas, dibuja en un canvas nuevo y lo exporta como WebP.
-5. Envía el base64 a Flutter por trozos y lo guarda en disco.
-
-No usa las imágenes `?hp=1` del precargador: esas son versiones recortadas/degradadas (media página) y se ven cortadas.
-
 ## Límites conocidos
 
-- **Invitado**: la web solo deja leer los **3 primeros capítulos**. Del 4 en adelante pide cuenta; la app mostrará que no hay páginas.
-- **Cloudflare**: si la verificación no aparece o no pasa, prueba a abrir la página en el WebView y resolverla a mano.
-- **Marcas de agua**: las páginas llevan una marca tenue del lector con IP y `guest`. Es del propio sitio.
-- **Cambios del sitio**: si aedexnox cambia el lector (nombres de clases, canvas o verificación), habrá que ajustar `_initScript` y la consulta de `canvas.manga-page-canvas`.
+- **Invitado**: 3 capítulos. Con cuenta gratuita se quita el límite.
+- **Cloudflare/Cap**: el Cap es proof-of-work y se resuelve en código; si el sitio lo cambia, habrá que ajustar `CapSolver`.
+- **Marcas de agua**: las páginas llevan la marca tenue del lector (IP + `guest`).
+- **Cambios del sitio**: si cambian el trailer o el mosaico, hay que ajustar `PageCrypto`.
+- **WebView**: si el login sigue rechazándose, el bloqueo es del lado servidor y haría falta un WebView nativo con el header `X-Requested-With` stripping.
 
 ## Aviso
 
-Este proyecto es una herramienta personal para leer contenido al que ya tienes acceso. Respeta las condiciones del sitio y los derechos de autor. No lo uses para redistribuir contenido.
+Herramienta personal para leer contenido al que ya tienes acceso. Respeta las condiciones del sitio y los derechos de autor.
