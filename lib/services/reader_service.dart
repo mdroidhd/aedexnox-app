@@ -551,7 +551,7 @@ class ReaderService {
       headers: {
         'Origin': AedexHttp.base,
         'User-Agent': AedexHttp.ua,
-        'Cookie': http.cookieHeaderFor(uri),
+        'Cookie': http.cookieHeaderFor(Uri.parse(AedexHttp.base)),
       },
     );
 
@@ -612,7 +612,10 @@ class ReaderService {
   }
 
   String? _parseSeed(String html) {
-    return RegExp(r'data-seed="([0-9a-f]{32})"').firstMatch(html)?.group(1) ??
+    return RegExp(r'id="bv-frame"[^>]*data-seed="([0-9a-f]{32})"')
+            .firstMatch(html)
+            ?.group(1) ??
+        RegExp(r'data-seed="([0-9a-f]{32})"').firstMatch(html)?.group(1) ??
         RegExp(r'name="reader-token"\s+content="([^"]+)"')
             .firstMatch(html)
             ?.group(1) ??

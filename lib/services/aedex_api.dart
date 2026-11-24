@@ -240,6 +240,15 @@ class AedexApi {
 
   AedexApi([AedexHttp? client]) : http = client ?? AedexHttp();
 
+  Future<HttpResult> _apiGet(Uri uri) async {
+    var result = await http.get(uri, api: true);
+    if (result.status == 401) {
+      await SessionService.saveAccessToken(null);
+      result = await http.get(uri, api: true);
+    }
+    return result;
+  }
+
   Future<CatalogPage> catalog({int page = 1, int limit = 50}) async {
     final uri = Uri.parse('$base/api/backend/mangas').replace(
       queryParameters: {
@@ -248,7 +257,7 @@ class AedexApi {
         'sort': '-n_visitas',
       },
     );
-    final result = await http.get(uri, api: true);
+    final result = await _apiGet(uri);
     if (!result.ok) {
       throw Exception('HTTP ${result.status} al cargar el catálogo');
     }
@@ -260,8 +269,7 @@ class AedexApi {
   }
 
   Future<List<ChapterItem>> chapters(String slug) async {
-    final result =
-        await http.get(Uri.parse('$base/api/backend/mangas/$slug'), api: true);
+    final result = await _apiGet(Uri.parse('$base/api/backend/mangas/$slug'));
     if (!result.ok) {
       throw Exception('HTTP ${result.status} al cargar los capítulos');
     }
@@ -278,7 +286,7 @@ class AedexApi {
   }
 
   Future<SystemInfo> system() async {
-    final result = await http.get(Uri.parse('$base/api/backend/system'), api: true);
+    final result = await _apiGet(Uri.parse('$base/api/backend/system'));
     if (!result.ok) throw Exception('HTTP ${result.status} en /system');
     final data = jsonDecode(result.text) as Map<String, dynamic>;
     return SystemInfo(

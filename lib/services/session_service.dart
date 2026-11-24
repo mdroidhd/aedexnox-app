@@ -24,7 +24,8 @@ class SessionService {
     return v == null ? null : v.toString();
   }
 
-  static bool get isLoggedIn => cookies.isNotEmpty;
+  static bool get isLoggedIn =>
+      cookies.keys.any((name) => name.toLowerCase().contains('session-token'));
 
   static Future<void> saveCookies(Map<String, String> values) async {
     await _box.put('cookies', values);
