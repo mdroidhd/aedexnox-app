@@ -444,6 +444,11 @@ class ReaderService {
     final reader = await http.postForm(
       Uri.parse(redirectUrl),
       'data=${Uri.encodeQueryComponent(redirectData)}',
+      headers: {
+        'Referer': chapterUrl,
+        'Origin': AedexHttp.base,
+        ...AedexHttp.lectoHeaders,
+      },
     );
     if (!reader.ok) {
       throw ReaderException('No se pudo abrir el lector (HTTP ${reader.status})');
@@ -452,7 +457,10 @@ class ReaderService {
     final seed = _parseSeed(reader.text);
     final context = _parseContext(reader.text);
     if (seed == null || context == null) {
-      throw const ReaderException('No se pudo leer el contexto del lector');
+      throw ReaderException(
+        'No se pudo leer el contexto del lector '
+        '(HTTP ${reader.status}, ${reader.uri})',
+      );
     }
 
     var handles = ((context['pages'] as List?) ?? const [])

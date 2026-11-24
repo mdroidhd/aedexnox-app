@@ -108,7 +108,10 @@ class AedexHttp {
       headers?.forEach((k, v) => request.headers.set(k, v));
       final cookie = cookieHeaderFor(current);
       if (cookie.isNotEmpty) request.headers.set('Cookie', cookie);
-      if (currentBody != null) request.add(currentBody);
+      if (currentBody != null) {
+        request.contentLength = currentBody.length;
+        request.add(currentBody);
+      }
 
       final response =
           await request.close().timeout(const Duration(seconds: 60));
