@@ -35,7 +35,7 @@ flutter run
 Si `flutter create` se queja porque la carpeta no está vacía, ignóralo: solo crea lo que falta. Si sobrescribe `pubspec.yaml` o `lib/`, recupera los archivos del repo:
 
 ```bash
-git checkout -- pubspec.yaml lib
+git checkout -- pubspec.yaml lib analysis_options.yaml test
 flutter pub get
 ```
 

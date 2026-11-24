@@ -5,7 +5,7 @@ set -e
 flutter create --platforms=android,ios --project-name aedexnox_app .
 
 # Por si flutter create tocó archivos nuestros.
-git checkout -- pubspec.yaml lib 2>/dev/null || true
+git checkout -- pubspec.yaml lib analysis_options.yaml test 2>/dev/null || true
 
 flutter pub get
 
