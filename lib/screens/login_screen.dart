@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -26,21 +27,60 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _saving = false;
   String _debug = '';
 
-  static const String _cleanUa =
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  static const String _androidUa =
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
-  static const String _loginScript = r'''
-(() => {
-  const CLEAN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+  static const String _iosUa =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
+      'Mobile/15E148 Safari/604.1';
+
+  String get _cleanUa => Platform.isAndroid ? _androidUa : _iosUa;
+
+  String get _loginScript {
+    final ua = jsonEncode(_cleanUa);
+    final identity = Platform.isAndroid
+        ? r'''
   const CLEAN_DATA = {
     brands: [
       { brand: 'Chromium', version: '131' },
       { brand: 'Not_A Brand', version: '24' }
     ],
-    mobile: false,
-    platform: 'Windows'
+    mobile: true,
+    platform: 'Android',
+    getHighEntropyValues: function(hints) {
+      return Promise.resolve({
+        architecture: 'arm',
+        bitness: '64',
+        brands: CLEAN_DATA.brands,
+        fullVersionList: [
+          { brand: 'Chromium', version: '131.0.0.0' },
+          { brand: 'Not_A Brand', version: '24.0.0.0' }
+        ],
+        mobile: true,
+        model: 'Pixel 7',
+        platform: 'Android',
+        platformVersion: '13.0.0',
+        uaFullVersion: '131.0.0.0',
+        wow64: false
+      });
+    }
   };
+  define(Navigator.prototype, 'userAgentData', CLEAN_DATA);
+  define(navigator, 'userAgentData', CLEAN_DATA);
+  window.chrome = window.chrome || {
+    runtime: {},
+    loadTimes: function() {},
+    csi: function() {},
+    app: {}
+  };
+'''
+        : '';
+
+    return '''
+(() => {
+  const CLEAN_UA = $ua;
 
   function define(obj, prop, value) {
     try {
@@ -53,16 +93,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
   define(Navigator.prototype, 'userAgent', CLEAN_UA);
   define(navigator, 'userAgent', CLEAN_UA);
-  define(Navigator.prototype, 'userAgentData', CLEAN_DATA);
-  define(navigator, 'userAgentData', CLEAN_DATA);
   define(navigator, 'webdriver', false);
-
-  window.chrome = window.chrome || {
-    runtime: {},
-    loadTimes: function() {},
-    csi: function() {},
-    app: {}
-  };
+  $identity
 
   const dropHeader = (headers) => {
     if (!headers) return;
@@ -92,6 +124,7 @@ class _LoginScreenState extends State<LoginScreen> {
   };
 })();
 ''';
+  }
 
   static const String _debugScript = r'''
 (() => {
@@ -215,6 +248,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
                 mediaPlaybackRequiresUserGesture: false,
+                requestedWithHeaderOriginAllowList: <String>{},
               ),
               initialUserScripts: UnmodifiableListView<UserScript>([
                 UserScript(
