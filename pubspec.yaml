@@ -18,7 +18,7 @@ dependencies:
   crypto: ^3.0.6
   pointycastle: ^3.9.1
   web_socket_channel: ^3.0.1
-  image: ^4.5.4
+  image: 4.13.1
 
 dev_dependencies:
   flutter_lints: ^4.0.0
