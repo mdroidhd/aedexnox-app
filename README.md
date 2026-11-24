@@ -15,9 +15,15 @@ App Flutter (Android/iOS) para navegar el catálogo de **aedexnox.com**, ver las
 
 ## Requisitos
 
-- Flutter 3.22 o superior (Dart 3.3+).
+- Flutter 3.32 o superior (Dart 3.8+).
 - Android 5.0+ / iOS 12+.
 - Conexión a internet solo para la primera carga del catálogo y para descargar capítulos nuevos.
+
+## Nota sobre Android / AGP
+
+La versión estable de `flutter_inappwebview` (6.1.5) falla con AGP 8.9+ porque usa
+`proguard-android.txt`. Este proyecto usa `6.2.0-beta.3`, que ya trae
+`proguard-android-optimize.txt` y el arreglo para AGP 9.
 
 ## Puesta en marcha
 
