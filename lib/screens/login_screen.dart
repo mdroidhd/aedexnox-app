@@ -55,7 +55,7 @@ class _LoginScreenState extends State<LoginScreen> {
   const originalFetch = window.fetch;
   window.fetch = function(input, init) {
     try { if (init) dropHeader(init.headers); } catch (e) {}
-    return originalFetch(input, init);
+    return originalFetch.call(window, input, init);
   };
 
   const originalSet = XMLHttpRequest.prototype.setRequestHeader;
