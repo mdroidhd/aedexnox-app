@@ -77,12 +77,7 @@ class EcdsaP256 {
   EcdsaP256._(this.publicKey, this.privateKey);
 
   factory EcdsaP256() {
-    final seed = Uint8List(32);
-    final random = Random.secure();
-    for (var i = 0; i < seed.length; i++) {
-      seed[i] = random.nextInt(256);
-    }
-    final fortuna = pc.FortunaRandom()..seed(pc.KeyParameter(seed));
+    final fortuna = pc.FortunaRandom()..seed(pc.KeyParameter(_randomSeed()));
     final generator = pc.ECKeyGenerator()
       ..init(pc.ParametersWithRandom(
         pc.ECKeyGeneratorParameters(pc.ECCurve_prime256v1()),
@@ -110,11 +105,24 @@ class EcdsaP256 {
     return base64Url.encode(spki).replaceAll('=', '');
   }
 
+  static Uint8List _randomSeed() {
+    final seed = Uint8List(32);
+    final random = Random.secure();
+    for (var i = 0; i < seed.length; i++) {
+      seed[i] = random.nextInt(256);
+    }
+    return seed;
+  }
+
   String sign(String challenge) {
     final signer = pc.ECDSASigner(pc.SHA256Digest());
+    final fortuna = pc.FortunaRandom()..seed(pc.KeyParameter(_randomSeed()));
     signer.init(
       true,
-      pc.PrivateKeyParameter<pc.ECPrivateKey>(privateKey),
+      pc.ParametersWithRandom(
+        pc.PrivateKeyParameter<pc.ECPrivateKey>(privateKey),
+        fortuna,
+      ),
     );
     final signature = signer.generateSignature(
       Uint8List.fromList(utf8.encode(challenge)),
