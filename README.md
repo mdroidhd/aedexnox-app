@@ -10,6 +10,7 @@ El downloader ya **no usa el WebView del lector**: habla directamente con la API
 - **Capítulos** por `/api/backend/mangas/<slug>`.
 - **Descarga directa**: resuelve el Cap proof-of-work, firma las llamadas del lector, obtiene las páginas y las descifra/desordena en Dart.
 - **Lector vertical** con las imágenes ya guardadas, sin conexión.
+- **Carga lazy**: al abrir un capítulo sin descargar, las páginas se piden conforme se ven y se guardan; no se bajan las 20 de golpe.
 - **Caché** en Hive para catálogo/capítulos y archivos JPG para las páginas.
 - **Login** en un WebView parcheado para saltar el bloqueo de WebViews del sitio.
 
@@ -50,7 +51,7 @@ La versión estable de `flutter_inappwebview` (6.1.5) falla con AGP 8.9+ porque 
 7. **Token de vida**: `POST /lector/<vivo>/` con `{h}`; dura 45 s y se renueva.
 8. **Páginas**: `GET /lector/p/<handle>/?q=hq` con `bv-build`, `bv-sig` y `bv-live`.
 9. **Imagen**: el sitio añade un **trailer** al final con la clave real, el XOR y el gutter, enmascarado con `sha256(t:m0:handle)` y `sha256(t:m1:handle)`. Se desenmascara, se aplica XOR y se reconstruye el mosaico 8×8 con el PRNG mulberry32 (semilla = hash Java de la clave).
-10. Se guarda como PNG y se apunta en Hive.
+10. Se guarda como JPG y se apunta en Hive.
 
 Las páginas quedan a resolución completa (1128×1600) y sin el recorte `?hp=1` que daba el sitio.
 
@@ -61,21 +62,23 @@ El sitio bloquea WebViews con el chunk `6800-*.js`:
 - UA con `; wv` o `Version/4.0 ... Chrome`.
 - UA-CH con marca "Google Chrome" y `window.chrome` indefinido.
 
-La app hace el login en **dos fases**, como la extensión de Keiyoushi:
+La app abre `/auth/login` en un WebView con:
 
-1. Abre `/auth/login` en un WebView con UA de Chrome móvil sin `wv`, define
-   `window.chrome` antes de que corra el JS del sitio y quita `X-Requested-With`
-   de `fetch`/XHR. El usuario resuelve Cloudflare/Turnstile ahí.
-2. Con el token de Turnstile, pide `/api/auth/csrf` y manda las credenciales
-   desde Dart a `/api/auth/callback/credentials` (sin `X-Requested-With`, que es
-   lo que el servidor rechaza en un WebView). Después lee `/api/auth/session`,
-   guarda las cookies y el `access_token`.
+- `userAgent` de Chrome limpio.
+- Override de `navigator.userAgent` y `navigator.userAgentData` antes de que
+  corra el JS del sitio.
+- `window.chrome` definido.
+- `X-Requested-With` eliminado de `fetch`/XHR.
+
+El usuario inicia sesión en la propia página y pulsa **Listo**. La app guarda
+las cookies (incluidas HttpOnly) y pide `/api/auth/session` para el token.
 
 Con sesión, el límite de 3 capítulos desaparece. El pase `ax_rp` sigue siendo
 por IP y se resuelve igual.
 
-Si el sitio cambia el bloqueo o rechaza el login, la app sigue funcionando como
-invitado para los 3 primeros capítulos.
+En la parte superior del login hay una línea de diagnóstico con el UA, las
+marcas de UA-CH y el tipo de `window.chrome`. Si el aviso de WebView vuelve a
+salir, esa línea dice qué comprobación está fallando.
 
 ## Estructura
 
