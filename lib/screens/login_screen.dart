@@ -44,6 +44,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ? r'''
   const CLEAN_DATA = {
     brands: [
+      { brand: 'Google Chrome', version: '131' },
       { brand: 'Chromium', version: '131' },
       { brand: 'Not_A Brand', version: '24' }
     ],
@@ -55,6 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
         bitness: '64',
         brands: CLEAN_DATA.brands,
         fullVersionList: [
+          { brand: 'Google Chrome', version: '131.0.0.0' },
           { brand: 'Chromium', version: '131.0.0.0' },
           { brand: 'Not_A Brand', version: '24.0.0.0' }
         ],
