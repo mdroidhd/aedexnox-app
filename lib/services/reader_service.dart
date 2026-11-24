@@ -204,7 +204,8 @@ class PageCrypto {
     if (bytes.length < 9 || mask.isEmpty) return null;
 
     final trailerLength = (bytes[bytes.length - 2] << 8) | bytes[bytes.length - 1];
-    if (trailerLength < 513 || trailerLength > 65030) return null;
+    // El trailer es pequeño (metadatos): el WASM acepta longitudes < 513.
+    if (trailerLength == 0 || trailerLength >= 513) return null;
     if (bytes.length < trailerLength + 2) return null;
 
     final start = bytes.length - trailerLength - 2;
@@ -815,10 +816,10 @@ class ReaderService {
     )) {
       final tile = im.copyCrop(
         decoded,
-        slice.sx,
-        slice.sy,
-        slice.sw,
-        slice.sh,
+        x: slice.sx,
+        y: slice.sy,
+        width: slice.sw,
+        height: slice.sh,
       );
       im.compositeImage(output, tile, dstX: slice.dx, dstY: slice.dy);
     }
