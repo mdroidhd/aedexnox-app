@@ -35,6 +35,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final Set<int> _loading = {};
   final Set<int> _failed = {};
 
+  ReaderService? _reader;
   ReaderSession? _session;
   int _count = 0;
   bool _opening = true;
@@ -78,8 +79,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     _failed.clear();
     try {
-      final session =
-          await ReaderService(AedexApi()).openChapter(widget.series.slug, widget.chapter.slug);
+      final reader = ReaderService(AedexApi());
+      final session = await reader.openChapter(
+        widget.series.slug,
+        widget.chapter.slug,
+      );
       final directory = await CacheService.chapterDir(
         widget.series.slug,
         widget.chapter.slug,
@@ -90,6 +94,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         await CacheService.markDirectory(directory);
       }
 
+      _reader = reader;
       _session = session;
       _count = session.handles.length;
       for (var i = 0; i < _count; i++) {
@@ -134,7 +139,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _pump() async {
-    if (_pumping || _session == null) return;
+    if (_pumping || _session == null || _reader == null) return;
     _pumping = true;
 
     while (_queue.isNotEmpty && !_disposed) {
@@ -143,7 +148,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _loading.add(index);
 
       try {
-        final bytes = await _session!.fetchPage(_session!, index);
+        final bytes = await _reader!.fetchPage(_session!, index);
         final directory = await CacheService.chapterDir(
           widget.series.slug,
           widget.chapter.slug,
