@@ -25,6 +25,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _uaRetry = false;
   String _cleanUa = '';
   String _debug = '';
+  String _postHeaders = '';
 
   // UA limpio de reserva: si el WebView no nos da su UA (null) o sigue
   // llevando marcadores, usamos este para que el POST nunca salga como WebView.
@@ -390,6 +391,29 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (_) {}
   }
 
+  void _showHeaders() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cabeceras del POST de login'),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            _postHeaders.isEmpty
+                ? 'Aún no se ha enviado ningún login. Pulsa Continuar en la página y vuelve a mirar.'
+                : _postHeaders,
+            style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cerrar'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _finish() async {
     if (_saving) return;
     setState(() => _saving = true);
@@ -432,6 +456,11 @@ class _LoginScreenState extends State<LoginScreen> {
       appBar: AppBar(
         title: const Text('Cuenta de Aedex'),
         actions: [
+          IconButton(
+            tooltip: 'Cabeceras del POST',
+            icon: const Icon(Icons.bug_report_outlined),
+            onPressed: _showHeaders,
+          ),
           IconButton(
             tooltip: 'Recargar',
             icon: const Icon(Icons.refresh),
@@ -478,10 +507,24 @@ class _LoginScreenState extends State<LoginScreen> {
                 mediaPlaybackRequiresUserGesture: false,
                 requestedWithHeaderOriginAllowList: <String>{},
                 useShouldOverrideUrlLoading: false,
+                useShouldInterceptRequest: true,
               ),
               onWebViewCreated: (controller) {
                 _controller = controller;
                 _prepare(controller);
+              },
+              shouldInterceptRequest: (controller, request) async {
+                final u = request.url.toString();
+                if (u.contains('/api/auth/callback/credentials')) {
+                  final h = (request.headers ?? const <String, String>{})
+                      .entries
+                      .map((e) => '${e.key}: ${e.value}')
+                      .join('\n');
+                  final txt = '${request.method} $u\n$h';
+                  debugPrint('POSTHDR $txt');
+                  if (mounted) setState(() => _postHeaders = txt);
+                }
+                return null;
               },
               onLoadStop: (controller, url) async {
                 final u = url?.toString() ?? '';
