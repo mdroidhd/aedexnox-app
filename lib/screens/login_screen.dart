@@ -1,4 +1,3 @@
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:io' show Platform;
 
@@ -131,6 +130,35 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   } catch(e) {}
 
+  // Quitar X-Requested-With que añade el JS de la web (axios/fetch).
+  // El servidor rechaza el login como WebViewNotAllowed si lo ve.
+  try {
+    const drop = (headers) => {
+      if (!headers) return;
+      if (headers instanceof Headers) {
+        headers.delete('X-Requested-With');
+      } else if (Array.isArray(headers)) {
+        for (let i = headers.length - 1; i >= 0; i--) {
+          if (String(headers[i][0]).toLowerCase() === 'x-requested-with') headers.splice(i, 1);
+        }
+      } else {
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === 'x-requested-with') delete headers[key];
+        }
+      }
+    };
+    const originalFetch = window.fetch;
+    window.fetch = function(input, init) {
+      try { if (init) drop(init.headers); } catch(e) {}
+      return originalFetch.call(window, input, init);
+    };
+    const originalSet = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+      if (String(name).toLowerCase() === 'x-requested-with') return;
+      return originalSet.call(this, name, value);
+    };
+  } catch(e) {}
+
   // webdriver false (por seguridad, aunque ya lo suele ser)
   define(Navigator.prototype, 'webdriver', false);
 })();
@@ -158,7 +186,7 @@ class _LoginScreenState extends State<LoginScreen> {
   // ---------- Flujo de preparación ----------
   Future<void> _prepare(InAppWebViewController controller) async {
     try {
-      final rawUa = await InAppWebViewController.getDefaultUserAgent() ?? '';
+      final rawUa = await InAppWebViewController.getDefaultUserAgent();
       _cleanUa = _cleanUserAgent(rawUa);
 
       if (_cleanUa.isNotEmpty) {
