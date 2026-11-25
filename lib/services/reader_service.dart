@@ -508,6 +508,12 @@ class ReaderService {
     );
   }
 
+  /// Cap rechaza con 403 "Blocked" si falta Origin/Referer.
+  static const Map<String, String> _capHeaders = {
+    'Origin': AedexHttp.base,
+    'Referer': '${AedexHttp.base}/',
+  };
+
   Future<String> _solveCap(SystemInfo system) async {
     if (system.capEndpoint.isEmpty) {
       throw const ReaderException('El sitio no publicó el endpoint de Cap');
@@ -516,6 +522,7 @@ class ReaderService {
       Uri.parse('${system.capEndpoint}challenge'),
       const <String, dynamic>{},
       lector: true,
+      headers: _capHeaders,
     );
     if (!challengeResponse.ok) {
       throw ReaderException('Cap challenge HTTP ${challengeResponse.status}');
@@ -538,6 +545,7 @@ class ReaderService {
       Uri.parse('${system.capEndpoint}redeem'),
       {'token': token, 'solutions': solutions},
       lector: true,
+      headers: _capHeaders,
     );
     if (!redeemResponse.ok) {
       throw ReaderException('Cap redeem HTTP ${redeemResponse.status}');
@@ -558,7 +566,7 @@ class ReaderService {
       Uri.parse('${AedexHttp.base}/lector/pase'),
       {'token': capToken, 'sitekey': sitekey},
       lector: true,
-      headers: {ax.buildName: ax.buildId},
+      headers: {ax.buildName: ax.buildId, ..._capHeaders},
     );
     if (!response.ok) {
       throw ReaderException('No se pudo obtener el pase (HTTP ${response.status})');
