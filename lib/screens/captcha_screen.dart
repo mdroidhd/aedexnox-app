@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import '../services/aedex_api.dart';
 import '../services/browser_ua.dart';
-import '../services/webview_spoof.dart';
 
 class CaptchaResult {
   final String token;
@@ -18,9 +18,12 @@ class CaptchaResult {
   });
 }
 
-/// Abre la página de login solo para resolver Cloudflare Turnstile y devuelve
-/// el token junto con el User-Agent con el que se resolvió (el token va atado
-/// a ese UA) y las cookies de la sesión.
+/// Resuelve Cloudflare Turnstile sin cargar la web de Aedex.
+///
+/// La web tiene una guardia que bloquea la página entera cuando detecta un
+/// WebView, y falsear el navegador desde JS rompe Turnstile. Así que se carga
+/// una página propia en el mismo origen (para que la sitekey valga) con el
+/// widget de Turnstile y nada más.
 class CaptchaScreen extends StatefulWidget {
   const CaptchaScreen({super.key});
 
@@ -29,24 +32,67 @@ class CaptchaScreen extends StatefulWidget {
 }
 
 class _CaptchaScreenState extends State<CaptchaScreen> {
-  static const String _url = 'https://aedexnox.com/auth/login?callbackUrl=%2F';
+  static const String _origin = 'https://aedexnox.com/auth/login?callbackUrl=%2F';
   static const String _readScript = r'''
 (() => {
   try {
-    const el = document.querySelector('input[name="cf-turnstile-response"]');
-    if (el && el.value) return el.value;
-    const any = document.querySelector('[id$="_response"]');
-    return any && any.value ? any.value : '';
-  } catch (e) { return ''; }
+    return JSON.stringify({
+      t: window.__aedexToken || '',
+      e: window.__aedexError || '',
+      w: !!document.querySelector('#ts iframe, iframe')
+    });
+  } catch (e) { return '{}'; }
 })();
 ''';
 
   InAppWebViewController? _controller;
   String _ua = '';
-  bool _spoofed = false;
+  String _sitekey = '';
   bool _busy = false;
-  String _status = 'Esperando la verificación de Cloudflare…';
-  int _ticks = 0;
+  bool _spoofed = false;
+  String _status = 'Preparando la verificación…';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSitekey();
+  }
+
+  Future<void> _loadSitekey() async {
+    try {
+      final info = await AedexApi().system();
+      if (mounted) setState(() => _sitekey = info.turnstileSitekey);
+    } catch (_) {}
+  }
+
+  String _html(String sitekey) {
+    return '''<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#0d0d1c;color:#fff;font-family:system-ui,-apple-system,sans-serif}
+.wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;box-sizing:border-box;text-align:center}
+h1{font-size:17px;margin:0;font-weight:700}
+p{font-size:12px;color:#8b8ba3;margin:0}
+</style></head><body>
+<div class="wrap"><h1>Verificación</h1><p>Marca la casilla para continuar</p><div id="ts"></div></div>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer><\/script>
+<script>
+window.__aedexToken='';window.__aedexError='';
+var iv=setInterval(function(){
+  if(window.turnstile){
+    clearInterval(iv);
+    try{
+      window.turnstile.render('#ts',{
+        sitekey:'$sitekey',action:'login',theme:'dark',
+        callback:function(t){window.__aedexToken=t;},
+        'error-callback':function(e){window.__aedexError=String(e||'error');},
+        'expired-callback':function(){window.__aedexToken='';}
+      });
+    }catch(e){window.__aedexError=String(e);}
+  }
+},300);
+<\/script></body></html>''';
+  }
 
   Future<void> _setup(InAppWebViewController controller) async {
     var ua = BrowserUa.fallback;
@@ -64,23 +110,29 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
         requestedWithHeaderOriginAllowList: <String>{},
       ),
     );
-    // about:blank primero para leer el UA-CH real y luego parchear antes de
-    // que la web cargue su JS (su guardia mira las marcas del navegador).
-    await controller.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
+    // El primer about:blank ya está cargado; no hace falta ir a la web.
   }
 
-  Future<void> _poll() async {
-    if (_busy) return;
-    _ticks++;
-    final raw = await _controller?.evaluateJavascript(source: _readScript);
-    final token = _plain(raw);
-    if (token.isNotEmpty && token.length > 20) {
-      await _finish(token);
-      return;
-    }
-    if (mounted && _ticks % 4 == 0) {
-      setState(() => _status = 'Marca la casilla de Cloudflare para continuar.');
-    }
+  Future<void> _inject(InAppWebViewController controller) async {
+    final key = _sitekey.isNotEmpty ? _sitekey : '0x4AAAAAAGKc99U551pyrOVT';
+    final html = jsonEncode(_html(key));
+    final js = '''
+(() => {
+  try {
+    document.open();
+    document.write($html);
+    document.close();
+  } catch (e) {}
+})();
+''';
+    await controller.removeAllUserScripts();
+    await controller.addUserScript(
+      userScript: UserScript(
+        source: js,
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        forMainFrameOnly: true,
+      ),
+    );
   }
 
   String _plain(dynamic raw) {
@@ -161,38 +213,37 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
                 if (current == 'about:blank') {
                   if (_spoofed) return;
                   _spoofed = true;
-                  Map<String, dynamic> uaCh = {};
-                  try {
-                    final raw = await controller.evaluateJavascript(
-                      source: WebViewSpoof.capture,
-                    );
-                    var text = raw?.toString() ?? '';
-                    if (text.startsWith('"') && text.endsWith('"')) {
-                      text = jsonDecode(text).toString();
-                    }
-                    if (text.isNotEmpty && text != 'null') {
-                      uaCh = jsonDecode(text) as Map<String, dynamic>;
-                    }
-                  } catch (_) {}
-                  try {
-                    await controller.removeAllUserScripts();
-                    await controller.addUserScript(
-                      userScript: UserScript(
-                        source: WebViewSpoof.script(_ua, uaCh),
-                        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                        forMainFrameOnly: false,
-                      ),
-                    );
-                  } catch (_) {}
+                  await _inject(controller);
                   await controller.loadUrl(
-                    urlRequest: URLRequest(url: WebUri(_url)),
+                    urlRequest: URLRequest(url: WebUri(_origin)),
                   );
                   return;
                 }
-                for (var i = 0; i < 40; i++) {
-                  await Future<void>.delayed(const Duration(milliseconds: 700));
+                if (mounted) {
+                  setState(() => _status =
+                      'Marca la casilla de Cloudflare para continuar.');
+                }
+                for (var i = 0; i < 60; i++) {
+                  await Future<void>.delayed(const Duration(milliseconds: 800));
                   if (!mounted || _busy) return;
-                  await _poll();
+                  final raw =
+                      await controller.evaluateJavascript(source: _readScript);
+                  Map<String, dynamic> d = {};
+                  try {
+                    final text = _plain(raw);
+                    if (text.isNotEmpty) {
+                      d = jsonDecode(text) as Map<String, dynamic>;
+                    }
+                  } catch (_) {}
+                  final token = (d['t'] ?? '') as String;
+                  final err = (d['e'] ?? '') as String;
+                  if (token.isNotEmpty) {
+                    await _finish(token);
+                    return;
+                  }
+                  if (err.isNotEmpty && mounted) {
+                    setState(() => _status = 'Cloudflare: $err. Pulsa Recargar.');
+                  }
                 }
               },
             ),
@@ -201,35 +252,13 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Este paso solo sirve para el captcha. Tus datos se '
-                      'envían después desde la app.',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.white.withValues(alpha: 0.45),
-                      ),
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: _busy
-                        ? null
-                        : () async {
-                            final raw =
-                                await _controller?.evaluateJavascript(source: _readScript);
-                            final token = _plain(raw);
-                            if (token.isNotEmpty) {
-                              await _finish(token);
-                            } else {
-                              setState(() => _status =
-                                  'Aún no hay token. Marca la casilla de Cloudflare.');
-                            }
-                          },
-                    child: const Text('Ya está'),
-                  ),
-                ],
+              child: Text(
+                'Este paso solo resuelve el captcha. Tus datos se envían '
+                'después desde la app.',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.white.withValues(alpha: 0.45),
+                ),
               ),
             ),
           ),
