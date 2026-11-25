@@ -415,9 +415,9 @@ class AedexApi {
       case 'EmailNotVerified':
         return 'Verifica tu correo en la web de Aedex antes de continuar.';
       case 'WebViewNotAllowed':
-        return 'El sitio rechazó el inicio de sesión. Repite la verificación.';
+        return 'El sitio rechazó la petición (WebViewNotAllowed).';
       case 'TurnstileFailed':
-        return 'La verificación de Cloudflare falló. Repítela.';
+        return 'La verificación de Cloudflare falló (TurnstileFailed).';
       default:
         return 'No se pudo iniciar sesión ($code).';
     }
