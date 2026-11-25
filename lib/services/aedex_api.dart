@@ -5,6 +5,7 @@ import 'dart:typed_data';
 
 import '../models/chapter_item.dart';
 import '../models/series_item.dart';
+import 'browser_ua.dart';
 import 'session_service.dart';
 
 class HttpResult {
@@ -349,6 +350,7 @@ class AedexApi {
     required String password,
     required String csrfToken,
     required String turnstileToken,
+    String? userAgent,
   }) async {
     final fields = <String, String>{
       'csrfToken': csrfToken,
@@ -364,18 +366,20 @@ class AedexApi {
         )
         .join('&');
 
+    final ua = userAgent ?? AedexHttp.ua;
     final result = await http.postForm(
       Uri.parse('$base/api/auth/callback/credentials'),
       body,
       follow: false,
+      userAgent: ua,
       headers: {
-        'Accept': 'text/html,application/xhtml+xml',
+        'Accept': '*/*',
         'Origin': base,
         'Referer': '$base/auth/login',
-        'Upgrade-Insecure-Requests': '1',
         'sec-fetch-site': 'same-origin',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-dest': 'empty',
+        ...BrowserUa.mobileHints(ua),
       },
     );
 
