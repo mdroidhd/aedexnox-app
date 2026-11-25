@@ -8,13 +8,6 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../services/aedex_api.dart';
 import '../services/session_service.dart';
 
-/// Login en la página propia del sitio dentro de un WebView.
-///
-/// La web bloquea WebViews con dos comprobaciones de cliente:
-///  - UA con `; wv` o `Version/4.0 ... Chrome`.
-///  - UA-CH con marca "Google Chrome" y `window.chrome` indefinido.
-/// Se fuerza un UA limpio, se oculta "Google Chrome" de UA-CH y se define
-/// `window.chrome` antes de que corra el JS del sitio.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -23,107 +16,123 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  static const String _loginUrl =
+      'https://aedexnox.com/auth/login?callbackUrl=%2F';
+
   InAppWebViewController? _controller;
   bool _saving = false;
+  bool _preparing = true;
+  bool _captured = false;
+  String _cleanUa = '';
   String _debug = '';
 
-  static const String _androidUa =
-      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
-
-  static const String _iosUa =
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 '
-      'Mobile/15E148 Safari/604.1';
-
-  String get _cleanUa => Platform.isAndroid ? _androidUa : _iosUa;
-
-  String get _loginScript {
-    final ua = jsonEncode(_cleanUa);
-    final identity = Platform.isAndroid
-        ? r'''
-  const CLEAN_DATA = {
-    brands: [
-      { brand: 'Google Chrome', version: '131' },
-      { brand: 'Chromium', version: '131' },
-      { brand: 'Not_A Brand', version: '24' }
-    ],
-    mobile: true,
-    platform: 'Android',
-    getHighEntropyValues: function(hints) {
-      return Promise.resolve({
-        architecture: 'arm',
-        bitness: '64',
-        brands: CLEAN_DATA.brands,
-        fullVersionList: [
-          { brand: 'Google Chrome', version: '131.0.0.0' },
-          { brand: 'Chromium', version: '131.0.0.0' },
-          { brand: 'Not_A Brand', version: '24.0.0.0' }
-        ],
-        mobile: true,
-        model: 'Pixel 7',
-        platform: 'Android',
-        platformVersion: '13.0.0',
-        uaFullVersion: '131.0.0.0',
-        wow64: false
-      });
+  // ---------- 1) Limpiar SOLO los marcadores del UA real ----------
+  String _cleanUserAgent(String raw) {
+    if (raw.isEmpty) return raw;
+    if (Platform.isAndroid) {
+      return raw
+          .replaceAll(RegExp(r';\s*wv\b'), '')
+          .replaceAll(RegExp(r'\bVersion/4\.0\s+'), '');
     }
-  };
-  define(Navigator.prototype, 'userAgentData', CLEAN_DATA);
-  define(navigator, 'userAgentData', CLEAN_DATA);
-  window.chrome = window.chrome || {
-    runtime: {},
-    loadTimes: function() {},
-    csi: function() {},
-    app: {}
-  };
-'''
-        : '';
+    if (Platform.isIOS) {
+      if (!raw.contains('Safari/') && raw.contains('Mobile/')) {
+        final m = RegExp(r'OS (\d+)_(\d+)').firstMatch(raw);
+        final ver = m != null ? '${m.group(1)}.${m.group(2)}' : '17.0';
+        return '${raw.replaceFirst('Mobile/', 'Version/$ver Mobile/')} Safari/604.1';
+      }
+    }
+    return raw;
+  }
+
+  // ---------- 2) Captura el UA-CH real (antes de spoofear nada) ----------
+  static const String _captureScript = r'''
+(() => {
+  try {
+    const d = navigator.userAgentData;
+    return JSON.stringify({
+      ua: navigator.userAgent || '',
+      brands: d ? d.brands : [],
+      mobile: d ? !!d.mobile : false,
+      platform: d ? d.platform : ''
+    });
+  } catch(e) { return '{}'; }
+})();
+''';
+
+  // ---------- 3) Parche MINIMO: solo cambia "Android WebView" -> "Google Chrome" ----------
+  String _spoofScript(String ua, Map<String, dynamic> uaCh) {
+    final rawBrands = (uaCh['brands'] as List? ?? const []);
+    final patchedBrands = rawBrands.map<Map<String, String>>((b) {
+      final brand = (b['brand'] ?? '') as String;
+      final version = (b['version'] ?? '') as String;
+      final isWebView = brand.toLowerCase().contains('webview');
+      return {'brand': isWebView ? 'Google Chrome' : brand, 'version': version};
+    }).toList();
+
+    final mobile = uaCh['mobile'] ?? Platform.isAndroid;
+    final platform =
+        uaCh['platform'] ?? (Platform.isAndroid ? 'Android' : 'iOS');
 
     return '''
 (() => {
-  const CLEAN_UA = $ua;
+  const UA = ${jsonEncode(ua)};
+  const BRANDS = ${jsonEncode(patchedBrands)};
+  const MOBILE = ${jsonEncode(mobile)};
+  const PLATFORM = ${jsonEncode(platform)};
 
-  function define(obj, prop, value) {
-    try {
-      Object.defineProperty(obj, prop, {
-        get: () => value,
-        configurable: true
-      });
-    } catch (e) {}
-  }
+  const define = (obj, prop, value) => {
+    try { Object.defineProperty(obj, prop, { get: () => value, configurable: true }); } catch(e) {}
+  };
 
-  define(Navigator.prototype, 'userAgent', CLEAN_UA);
-  define(navigator, 'userAgent', CLEAN_UA);
-  define(navigator, 'webdriver', false);
-  $identity
+  // navigator.userAgent coherente con el header
+  define(Navigator.prototype, 'userAgent', UA);
+  define(navigator, 'userAgent', UA);
 
-  const dropHeader = (headers) => {
-    if (!headers) return;
-    if (headers instanceof Headers) {
-      headers.delete('X-Requested-With');
-    } else if (Array.isArray(headers)) {
-      for (let i = headers.length - 1; i >= 0; i--) {
-        if (String(headers[i][0]).toLowerCase() === 'x-requested-with') headers.splice(i, 1);
+  // navigator.userAgentData.brands SIN "Android WebView"
+  try {
+    const real = navigator.userAgentData;
+    if (real) {
+      const patched = Object.create(real);
+
+      Object.defineProperty(patched, 'brands',  { get: () => BRANDS,   configurable: true });
+      Object.defineProperty(patched, 'mobile',  { get: () => MOBILE,   configurable: true });
+      Object.defineProperty(patched, 'platform',{ get: () => PLATFORM, configurable: true });
+
+      const origHigh = real.getHighEntropyValues ? real.getHighEntropyValues.bind(real) : null;
+      if (origHigh) {
+        Object.defineProperty(patched, 'getHighEntropyValues', {
+          configurable: true,
+          value: async (hints) => {
+            const r = await origHigh(hints);
+            if (r) {
+              if (Array.isArray(r.brands)) r.brands = BRANDS;
+              if (Array.isArray(r.fullVersionList)) {
+                r.fullVersionList = r.fullVersionList.map(b =>
+                  b.brand.toLowerCase().includes('webview')
+                    ? { brand: 'Google Chrome', version: b.version }
+                    : b
+                );
+              }
+            }
+            return r;
+          }
+        });
       }
-    } else {
-      for (const key of Object.keys(headers)) {
-        if (key.toLowerCase() === 'x-requested-with') delete headers[key];
-      }
+
+      define(Navigator.prototype, 'userAgentData', patched);
+      define(navigator, 'userAgentData', patched);
     }
-  };
+  } catch(e) {}
 
-  const originalFetch = window.fetch;
-  window.fetch = function(input, init) {
-    try { if (init) dropHeader(init.headers); } catch (e) {}
-    return originalFetch.call(window, input, init);
-  };
+  // window.chrome que el WebView no expone por defecto
+  try {
+    if (typeof window.chrome === 'undefined') {
+      window.chrome = { runtime: {}, loadTimes: () => {}, csi: () => {}, app: {} };
+    }
+  } catch(e) {}
 
-  const originalSet = XMLHttpRequest.prototype.setRequestHeader;
-  XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-    if (String(name).toLowerCase() === 'x-requested-with') return;
-    return originalSet.call(this, name, value);
-  };
+  // webdriver false (por seguridad, aunque ya lo suele ser)
+  define(Navigator.prototype, 'webdriver', false);
 })();
 ''';
   }
@@ -131,16 +140,99 @@ class _LoginScreenState extends State<LoginScreen> {
   static const String _debugScript = r'''
 (() => {
   try {
+    const ua = navigator.userAgent || '';
+    const brands = (navigator.userAgentData && navigator.userAgentData.brands) || [];
+    const hasWebViewMarker = /;\s*wv\b|Version\/4\.0.*Chrome/i.test(ua);
+    const hasWebViewBrand = brands.some(b => b.brand.toLowerCase().includes('webview'));
+    const hasChrome = typeof window.chrome !== 'undefined';
     return JSON.stringify({
-      ua: navigator.userAgent,
-      brands: (navigator.userAgentData && navigator.userAgentData.brands || []).map(b => b.brand),
-      chrome: typeof window.chrome
+      detected: hasWebViewMarker || hasWebViewBrand || !hasChrome,
+      ua: ua,
+      brands: brands.map(b => b.brand + '/' + b.version).join(', '),
+      chrome: hasChrome
     });
-  } catch (e) {
-    return '';
-  }
+  } catch(e) { return ''; }
 })();
 ''';
+
+  // ---------- Flujo de preparación ----------
+  Future<void> _prepare(InAppWebViewController controller) async {
+    try {
+      final rawUa = await InAppWebViewController.getDefaultUserAgent() ?? '';
+      _cleanUa = _cleanUserAgent(rawUa);
+
+      if (_cleanUa.isNotEmpty) {
+        await controller.setSettings(
+          settings: InAppWebViewSettings(
+            userAgent: _cleanUa,
+            javaScriptEnabled: true,
+            domStorageEnabled: true,
+            thirdPartyCookiesEnabled: true,
+            mediaPlaybackRequiresUserGesture: false,
+            requestedWithHeaderOriginAllowList: <String>{},
+            useShouldOverrideUrlLoading: false,
+          ),
+        );
+      }
+
+      // about:blank para leer UA-CH real ANTES de la web
+      await controller.loadUrl(
+        urlRequest: URLRequest(url: WebUri('about:blank')),
+      );
+    } catch (e) {
+      debugPrint('prepare error: $e');
+      if (mounted) setState(() => _preparing = false);
+      await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_loginUrl)));
+    }
+  }
+
+  Future<void> _applySpoofAndLoad(InAppWebViewController controller) async {
+    try {
+      final raw = await controller.evaluateJavascript(source: _captureScript);
+      final text = _plain(raw);
+      Map<String, dynamic> uaCh = {};
+      try {
+        if (text.isNotEmpty) uaCh = jsonDecode(text) as Map<String, dynamic>;
+      } catch (_) {}
+
+      final script = _spoofScript(_cleanUa, uaCh);
+
+      await controller.removeAllUserScripts();
+      await controller.addUserScript(
+        userScript: UserScript(
+          source: script,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          forMainFrameOnly: false,
+        ),
+      );
+
+      await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_loginUrl)));
+    } catch (e) {
+      debugPrint('spoof error: $e');
+      await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_loginUrl)));
+    } finally {
+      if (mounted) setState(() => _preparing = false);
+    }
+  }
+
+  String _plain(dynamic raw) {
+    if (raw == null) return '';
+    var v = raw.toString();
+    if (v.startsWith('"') && v.endsWith('"')) {
+      try {
+        v = jsonDecode(v).toString();
+      } catch (_) {}
+    }
+    return v;
+  }
+
+  Future<void> _readDebug() async {
+    try {
+      final raw = await _controller?.evaluateJavascript(source: _debugScript);
+      final text = _plain(raw);
+      if (mounted && text.isNotEmpty) setState(() => _debug = text);
+    } catch (_) {}
+  }
 
   Future<void> _finish() async {
     if (_saving) return;
@@ -150,10 +242,9 @@ class _LoginScreenState extends State<LoginScreen> {
         url: WebUri('https://aedexnox.com'),
       );
       final values = <String, String>{};
-      for (final cookie in cookies) {
-        if (cookie.name.isNotEmpty) values[cookie.name] = cookie.value;
+      for (final c in cookies) {
+        if (c.name.isNotEmpty) values[c.name] = c.value;
       }
-
       await SessionService.saveCookies(values);
       final api = AedexApi();
       final token = await api.sessionToken();
@@ -170,32 +261,13 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
       Navigator.of(context).pop(true);
-    } catch (error) {
+    } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('No se pudo guardar la sesión: $error')),
+        SnackBar(content: Text('No se pudo guardar la sesión: $e')),
       );
     }
-  }
-
-  String _plain(dynamic raw) {
-    if (raw == null) return '';
-    var value = raw.toString();
-    if (value.startsWith('"') && value.endsWith('"')) {
-      try {
-        value = jsonDecode(value).toString();
-      } catch (_) {}
-    }
-    return value;
-  }
-
-  Future<void> _readDebug() async {
-    try {
-      final raw = await _controller?.evaluateJavascript(source: _debugScript);
-      final text = _plain(raw);
-      if (mounted && text.isNotEmpty) setState(() => _debug = text);
-    } catch (_) {}
   }
 
   @override
@@ -241,33 +313,31 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           Expanded(
             child: InAppWebView(
-              initialUrlRequest: URLRequest(
-                url: WebUri('https://aedexnox.com/auth/login?callbackUrl=%2F'),
-              ),
+              initialUrlRequest: URLRequest(url: WebUri('about:blank')),
               initialSettings: InAppWebViewSettings(
-                userAgent: _cleanUa,
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
                 mediaPlaybackRequiresUserGesture: false,
                 requestedWithHeaderOriginAllowList: <String>{},
+                useShouldOverrideUrlLoading: false,
               ),
-              initialUserScripts: UnmodifiableListView<UserScript>([
-                UserScript(
-                  source: _loginScript,
-                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                  forMainFrameOnly: false,
-                ),
-              ]),
               onWebViewCreated: (controller) {
                 _controller = controller;
+                _prepare(controller);
               },
               onLoadStop: (controller, url) async {
-                await _readDebug();
+                final u = url?.toString() ?? '';
+                if (u == 'about:blank' && !_captured) {
+                  _captured = true;
+                  await _applySpoofAndLoad(controller);
+                } else if (u.contains('/auth/login')) {
+                  await _readDebug();
+                }
               },
             ),
           ),
-          if (_saving)
+          if (_saving || _preparing)
             const LinearProgressIndicator()
           else
             const SizedBox(height: 4),
