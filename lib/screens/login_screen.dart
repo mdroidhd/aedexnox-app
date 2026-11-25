@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../services/aedex_api.dart';
@@ -27,14 +28,21 @@ class _LoginScreenState extends State<LoginScreen> {
   String _debug = '';
   String _postHeaders = '';
 
-  // El login se hace en modo escritorio: el sitio rechaza los UA de WebView y
-  // ademas el token de Turnstile va atado al UA, asi que el captcha y el POST
-  // tienen que salir con el mismo UA de Chrome de escritorio.
+  // Modo escritorio: el sitio acepta el login con UA de Chrome de escritorio,
+  // pero Cloudflare Turnstile falla al resolver el captcha con UA de escritorio
+  // en un dispositivo movil (incoherencia UA/plataforma). Se deja apagado: el
+  // captcha debe resolverlo el WebView con su UA movil limpio.
+  static const bool _desktopMode = false;
+
   static const String _desktopUaFallback =
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 
-  String get _fallbackUa => _desktopUaFallback;
+  static const String _mobileUaFallback =
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+
+  String get _fallbackUa => _desktopMode ? _desktopUaFallback : _mobileUaFallback;
 
   /// UA de escritorio con la version real del motor del WebView.
   String _desktopUa(String rawUa) {
@@ -42,6 +50,14 @@ class _LoginScreenState extends State<LoginScreen> {
     final version = m?.group(1) ?? '144.0.0.0';
     return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
         '(KHTML, like Gecko) Chrome/$version Safari/537.36';
+  }
+
+  /// Quita del UA nativo los marcadores que el sitio rechaza.
+  String _cleanUserAgent(String raw) {
+    if (raw.isEmpty) return raw;
+    return raw
+        .replaceAll(RegExp(r';\s*wv\b'), '')
+        .replaceAll(RegExp(r'\bVersion/4\.0\s+'), '');
   }
 
   // ---------- 2) Captura el UA-CH real (antes de spoofear nada) ----------
@@ -69,9 +85,10 @@ class _LoginScreenState extends State<LoginScreen> {
       return {'brand': isWebView ? 'Google Chrome' : brand, 'version': version};
     }).toList();
 
-    // Siempre escritorio: es lo que dice el UA y lo que acepta el servidor.
-    final mobile = false;
-    final platform = 'Linux';
+    final mobile = _desktopMode ? false : (uaCh['mobile'] ?? Platform.isAndroid);
+    final platform = _desktopMode
+        ? 'Linux'
+        : (uaCh['platform'] ?? (Platform.isAndroid ? 'Android' : 'iOS'));
 
     return '''
 (() => {
@@ -224,12 +241,12 @@ class _LoginScreenState extends State<LoginScreen> {
         {'brand': 'Not_A Brand', 'version': '24.0.0.0'},
       ],
       'fullVersion': full,
-      'platform': 'Linux',
-      'platformVersion': '6.1.0',
-      'architecture': 'x86',
-      'model': '',
-      'mobile': false,
-      'bitness': '64',
+      'platform': _desktopMode ? 'Linux' : 'Android',
+      'platformVersion': _desktopMode ? '6.1.0' : '14.0.0',
+      'architecture': _desktopMode ? 'x86' : '',
+      'model': _desktopMode ? '' : 'Pixel 8',
+      'mobile': !_desktopMode,
+      'bitness': _desktopMode ? '64' : '',
       'wow64': false,
     };
     try {
@@ -255,11 +272,14 @@ class _LoginScreenState extends State<LoginScreen> {
   // ---------- Flujo de preparación ----------
   Future<void> _prepare(InAppWebViewController controller) async {
     try {
-      var clean = _desktopUaFallback;
+      String clean = _fallbackUa;
       try {
         final raw = await InAppWebViewController.getDefaultUserAgent();
-        if (raw.isNotEmpty) clean = _desktopUa(raw);
+        if (raw.isNotEmpty) {
+          clean = _desktopMode ? _desktopUa(raw) : _cleanUserAgent(raw);
+        }
       } catch (_) {}
+      if (clean.isEmpty) clean = _fallbackUa;
       _cleanUa = clean;
 
       if (_cleanUa.isNotEmpty) {
@@ -272,8 +292,9 @@ class _LoginScreenState extends State<LoginScreen> {
             mediaPlaybackRequiresUserGesture: false,
             requestedWithHeaderOriginAllowList: <String>{},
             useShouldOverrideUrlLoading: false,
-            useWideViewPort: true,
-            loadWithOverviewMode: true,
+            useShouldInterceptRequest: true,
+            useWideViewPort: _desktopMode,
+            loadWithOverviewMode: _desktopMode,
             supportZoom: true,
             builtInZoomControls: true,
             displayZoomControls: false,
@@ -391,6 +412,13 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         actions: [
           TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: _postHeaders));
+              if (ctx.mounted) Navigator.of(ctx).pop();
+            },
+            child: const Text('Copiar'),
+          ),
+          TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('Cerrar'),
           ),
@@ -486,8 +514,8 @@ class _LoginScreenState extends State<LoginScreen> {
               initialUrlRequest: URLRequest(url: WebUri('about:blank')),
               initialSettings: InAppWebViewSettings(
                 userAgent: _cleanUa.isEmpty ? _fallbackUa : _cleanUa,
-                useWideViewPort: true,
-                loadWithOverviewMode: true,
+                useWideViewPort: _desktopMode,
+                loadWithOverviewMode: _desktopMode,
                 supportZoom: true,
                 builtInZoomControls: true,
                 displayZoomControls: false,
