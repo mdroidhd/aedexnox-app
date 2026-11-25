@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -49,7 +50,7 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
   String _ua = '';
   String _sitekey = '';
   bool _busy = false;
-  bool _spoofed = false;
+  bool _loaded = false;
   String _status = 'Preparando la verificación…';
 
   @override
@@ -113,27 +114,6 @@ var iv=setInterval(function(){
     // El primer about:blank ya está cargado; no hace falta ir a la web.
   }
 
-  Future<void> _inject(InAppWebViewController controller) async {
-    final key = _sitekey.isNotEmpty ? _sitekey : '0x4AAAAAAGKc99U551pyrOVT';
-    final html = jsonEncode(_html(key));
-    final js = '''
-(() => {
-  try {
-    document.open();
-    document.write($html);
-    document.close();
-  } catch (e) {}
-})();
-''';
-    await controller.removeAllUserScripts();
-    await controller.addUserScript(
-      userScript: UserScript(
-        source: js,
-        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-        forMainFrameOnly: true,
-      ),
-    );
-  }
 
   String _plain(dynamic raw) {
     if (raw == null) return '';
@@ -203,17 +183,31 @@ var iv=setInterval(function(){
                 thirdPartyCookiesEnabled: true,
                 mediaPlaybackRequiresUserGesture: false,
                 requestedWithHeaderOriginAllowList: <String>{},
+                useShouldInterceptRequest: true,
               ),
               onWebViewCreated: (controller) {
                 _controller = controller;
                 _setup(controller);
               },
+              shouldInterceptRequest: (controller, request) async {
+                final u = request.url.toString();
+                if (request.isForMainFrame == true &&
+                    u.startsWith('https://aedexnox.com/auth/login')) {
+                  final key =
+                      _sitekey.isNotEmpty ? _sitekey : '0x4AAAAAAGKc99U551pyrOVT';
+                  return WebResourceResponse(
+                    contentType: 'text/html',
+                    contentEncoding: 'utf-8',
+                    data: Uint8List.fromList(utf8.encode(_html(key))),
+                  );
+                }
+                return null;
+              },
               onLoadStop: (controller, url) async {
                 final current = url?.toString() ?? '';
                 if (current == 'about:blank') {
-                  if (_spoofed) return;
-                  _spoofed = true;
-                  await _inject(controller);
+                  if (_loaded) return;
+                  _loaded = true;
                   await controller.loadUrl(
                     urlRequest: URLRequest(url: WebUri(_origin)),
                   );
