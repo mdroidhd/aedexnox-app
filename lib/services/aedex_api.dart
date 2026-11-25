@@ -95,6 +95,7 @@ class AedexHttp {
     List<int>? body,
     bool follow = true,
     bool keepBytes = false,
+    String? userAgent,
   }) async {
     Uri current = uri;
     String currentMethod = method;
@@ -103,7 +104,7 @@ class AedexHttp {
     for (int attempt = 0; attempt < 7; attempt++) {
       final request = await _client.openUrl(currentMethod, current);
       request.followRedirects = false;
-      request.headers.set('User-Agent', ua);
+      request.headers.set('User-Agent', userAgent ?? ua);
       request.headers.set('Accept-Language', 'es-ES,es;q=0.9');
       headers?.forEach((k, v) => request.headers.set(k, v));
       final cookie = cookieHeaderFor(current);
@@ -209,10 +210,12 @@ class AedexHttp {
     String body, {
     Map<String, String>? headers,
     bool follow = true,
+    String? userAgent,
   }) {
     return send(
       'POST',
       uri,
+      userAgent: userAgent,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'text/html',

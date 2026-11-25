@@ -27,6 +27,7 @@ class _LoginScreenState extends State<LoginScreen> {
   String _cleanUa = '';
   String _debug = '';
   String _postHeaders = '';
+  String _webViewUa = '';
 
   // Modo escritorio: el sitio acepta el login con UA de Chrome de escritorio,
   // pero Cloudflare Turnstile falla al resolver el captcha con UA de escritorio
@@ -59,6 +60,45 @@ class _LoginScreenState extends State<LoginScreen> {
         .replaceAll(RegExp(r';\s*wv\b'), '')
         .replaceAll(RegExp(r'\bVersion/4\.0\s+'), '');
   }
+
+  // Corta el POST de credenciales y lo manda a Dart: el WebView mete
+  // "Android WebView" en sec-ch-ua y el sitio lo rechaza, y eso no se puede
+  // cambiar desde JS ni con setSettings.
+  static const String _relayScript = r'''
+(() => {
+  const TARGET = '/api/auth/callback/credentials';
+  const relay = (body) => {
+    try {
+      const b = window.flutter_inappwebview;
+      if (b && b.callHandler) { b.callHandler('aedexLogin', body); return true; }
+    } catch (e) {}
+    return false;
+  };
+  const never = () => new Promise(() => {});
+  const origFetch = window.fetch;
+  window.fetch = function(input, init) {
+    try {
+      const url = typeof input === 'string' ? input : ((input && input.url) || '');
+      if (url.indexOf(TARGET) !== -1 && init && typeof init.body === 'string' && relay(init.body)) {
+        return never();
+      }
+    } catch (e) {}
+    return origFetch.apply(this, arguments);
+  };
+  const oOpen = XMLHttpRequest.prototype.open;
+  const oSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function(m, u) {
+    try { this.__ax = u; } catch (e) {}
+    return oOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function(b) {
+    try {
+      if (this.__ax && String(this.__ax).indexOf(TARGET) !== -1 && typeof b === 'string' && relay(b)) return;
+    } catch (e) {}
+    return oSend.apply(this, arguments);
+  };
+})();
+''';
 
   // ---------- 2) Captura el UA-CH real (antes de spoofear nada) ----------
   static const String _captureScript = r'''
@@ -335,6 +375,13 @@ class _LoginScreenState extends State<LoginScreen> {
           forMainFrameOnly: false,
         ),
       );
+      await controller.addUserScript(
+        userScript: UserScript(
+          source: _relayScript,
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          forMainFrameOnly: false,
+        ),
+      );
 
       await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_loginUrl)));
     } catch (e) {
@@ -425,6 +472,107 @@ class _LoginScreenState extends State<LoginScreen> {
         ],
       ),
     );
+  }
+
+
+  /// Envía el POST de credenciales desde Dart con el UA del WebView y client
+  /// hints de Chrome móvil (sin la marca "Android WebView").
+  Future<void> _relayLogin(String body) async {
+    final fields = Uri.splitQueryString(body);
+    if ((fields['username'] ?? '').isEmpty || (fields['password'] ?? '').isEmpty) {
+      return;
+    }
+    final ua = _webViewUa.isNotEmpty
+        ? _webViewUa
+        : (_cleanUa.isNotEmpty ? _cleanUa : _fallbackUa);
+    final full = _chromeFullVersion(ua);
+    final major = full.split('.').first;
+    final api = AedexApi();
+    try {
+      final cookies = await CookieManager.instance().getCookies(
+        url: WebUri(AedexApi.base),
+      );
+      api.http.seedCookies('aedexnox.com', {
+        for (final c in cookies)
+          if (c.name.isNotEmpty) c.name: c.value,
+      });
+
+      final res = await api.http.postForm(
+        Uri.parse('${AedexApi.base}/api/auth/callback/credentials'),
+        body,
+        follow: false,
+        userAgent: ua,
+        headers: {
+          'Accept': '*/*',
+          'Origin': AedexApi.base,
+          'Referer': '${AedexApi.base}/auth/login',
+          'sec-ch-ua': '"Chromium";v="$major", "Google Chrome";v="$major", "Not-A.Brand";v="99"',
+          'sec-ch-ua-mobile': '?1',
+          'sec-ch-ua-platform': '"Android"',
+          'sec-fetch-site': 'same-origin',
+          'sec-fetch-mode': 'cors',
+          'sec-fetch-dest': 'empty',
+        },
+      );
+
+      final location = res.headers['location'] ?? '';
+      final code = RegExp(r'[?&]error=([^&]+)').firstMatch(location)?.group(1) ??
+          RegExp(r'"error"\s*:\s*"([^"]+)"').firstMatch(res.text)?.group(1);
+      if (code != null && code.isNotEmpty) {
+        final msg = _loginMessage(Uri.decodeQueryComponent(code));
+        if (!mounted) return;
+        setState(() => _debug = 'Login rechazado: $code');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg)),
+        );
+        await _controller?.reload();
+        return;
+      }
+
+      if (location.contains('/auth/verify')) {
+        if (!mounted) return;
+        setState(() => _debug = 'El sitio pide verificar el correo');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Verifica tu correo en la web de Aedex y vuelve.'),
+          ),
+        );
+        await _controller?.reload();
+        return;
+      }
+
+      await SessionService.saveCookies(
+        api.http.exportCookies('aedexnox.com'),
+      );
+      final token = await api.sessionToken();
+      await SessionService.saveAccessToken(token);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _debug = 'Error al enviar el login: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('No se pudo completar el login: $e')),
+      );
+      await _controller?.reload();
+    }
+  }
+
+  String _loginMessage(String code) {
+    switch (code) {
+      case 'CredentialsSignin':
+        return 'Correo o contraseña incorrectos.';
+      case 'InvalidCredentials':
+        return 'Correo o contraseña incorrectos.';
+      case 'EmailNotVerified':
+        return 'Verifica tu correo en la web de Aedex.';
+      case 'WebViewNotAllowed':
+        return 'El sitio sigue rechazando la petición.';
+      case 'TurnstileFailed':
+        return 'La verificación de Cloudflare falló. Vuelve a intentarlo.';
+      default:
+        return 'No se pudo iniciar sesión ($code).';
+    }
   }
 
   Future<void> _finish() async {
@@ -529,13 +677,27 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               onWebViewCreated: (controller) {
                 _controller = controller;
+                controller.addJavaScriptHandler(
+                  handlerName: 'aedexLogin',
+                  callback: (args) async {
+                    if (args.isNotEmpty) {
+                      await _relayLogin(args.first.toString());
+                    }
+                    return null;
+                  },
+                );
                 _prepare(controller);
               },
               shouldInterceptRequest: (controller, request) async {
                 final u = request.url.toString();
                 if (u.contains('/api/auth/callback/credentials')) {
-                  final h = (request.headers ?? const <String, String>{})
-                      .entries
+                  final hdrs = request.headers ?? const <String, String>{};
+                  for (final e in hdrs.entries) {
+                    if (e.key.toLowerCase() == 'user-agent') {
+                      _webViewUa = e.value;
+                    }
+                  }
+                  final h = hdrs.entries
                       .map((e) => '${e.key}: ${e.value}')
                       .join('\n');
                   final txt = '${request.method} $u\n$h';
