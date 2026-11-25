@@ -326,25 +326,6 @@ class AedexApi {
     }
   }
 
-  /// Login completo desde Dart, sin WebView ni captcha.
-  ///
-  /// Primero visita /auth/login para que el sitio deje sus cookies; con ellas
-  /// el POST de credenciales no pide Turnstile y solo hay que mandar un
-  /// User-Agent de navegador normal (el que trae [AedexHttp.ua]).
-  Future<String> loginDirect({
-    required String email,
-    required String password,
-  }) async {
-    await http.get(Uri.parse('$base/auth/login'));
-    final csrfToken = await csrf();
-    return login(
-      email: email,
-      password: password,
-      csrfToken: csrfToken,
-      turnstileToken: '',
-    );
-  }
-
   Future<String> csrf() async {
     final result = await http.get(
       Uri.parse('$base/api/auth/csrf'),
