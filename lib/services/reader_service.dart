@@ -5,12 +5,15 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
+
 import 'package:crypto/crypto.dart' as c;
 import 'package:image/image.dart' as im;
 import 'package:pointycastle/export.dart' as pc;
 import 'package:web_socket_channel/io.dart';
 
 import 'aedex_api.dart';
+import 'session_service.dart';
 
 class ReaderException implements Exception {
   final String message;
@@ -403,7 +406,13 @@ class ReaderService {
       final proof = ax.proof('c', '$slug/$chapterNumber', now);
       response = await http.postJson(
         Uri.parse('${AedexHttp.base}/lector/capitulo'),
-        {'slug': slug, 'chapter': chapterNumber, 'modo': 'gratis'},
+        {
+          'slug': slug,
+          'chapter': chapterNumber,
+          // Sin modo cuando el usuario está logueado; el servidor autentica
+          // con la cookie de sesión. 'gratis' fuerza el límite de invitado.
+          if (!SessionService.isLoggedIn) 'modo': 'gratis',
+        },
         lector: true,
         headers: {
           'X-Catharsis-Ws-Pub': ecdsa.publicKeySpki,

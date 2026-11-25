@@ -313,21 +313,30 @@ class AedexApi {
     );
   }
 
+  /// Obtiene el access_token de la sesión NextAuth.
+  ///
+  /// Retorna null si la sesión existe pero no incluye access_token;
+  /// en ese caso la autenticación se hace via cookie de sesión.
   Future<String?> sessionToken() async {
-    final result = await http.get(Uri.parse('$base/api/auth/session'));
+    final result = await http.get(
+      Uri.parse('$base/api/auth/session'),
+      headers: {'Accept': 'application/json'},
+    );
+    // ignore: avoid_print
+    print('[LOGIN] sessionToken HTTP ${result.status}: ${result.text}');
     if (!result.ok) return null;
     try {
       final data = jsonDecode(result.text);
-      if (data is! Map) return null;
-      final user = data['user'];
-      return (data['access_token'] ??
-              data['accessToken'] ??
-              (user is Map ? user['access_token'] : null) ??
-              (user is Map ? user['accessToken'] : null))
-          ?.toString();
-    } catch (_) {
-      return null;
-    }
+      if (data is Map && data.isNotEmpty) {
+        final user = data['user'];
+        return (data['access_token'] ??
+                data['accessToken'] ??
+                (user is Map ? user['access_token'] : null) ??
+                (user is Map ? user['accessToken'] : null))
+            ?.toString();
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<String> csrf() async {
@@ -397,15 +406,75 @@ class AedexApi {
       }
       throw Exception('Login HTTP ${result.status}');
     }
+    // Si la redirección va fuera del sitio (p.ej. a Cloudflare), no hay sesión.
+    if (location.isNotEmpty &&
+        !location.startsWith('/') &&
+        !location.startsWith(base)) {
+      throw Exception(
+        'El inicio de sesión fue bloqueado (redirigido a: '
+        '${location.length > 80 ? location.substring(0, 80) : location})',
+      );
+    }
     if (location.contains('/auth/verify')) {
       throw Exception('Verifica tu correo en la web de Aedex antes de continuar.');
     }
 
-    final token = await sessionToken();
-    if (token == null || token.isEmpty) {
-      throw Exception('El sitio no devolvió el token de sesión.');
+    // El access_token puede no estar en la sesión NextAuth si el sitio usa
+    // auth por cookie de sesión para el backend. Se devuelve '' en ese caso;
+    // las cookies guardadas son el mecanismo de autenticación real.
+    final sessionAccess = await sessionToken();
+    if (sessionAccess != null && sessionAccess.isNotEmpty) return sessionAccess;
+
+    // Intento alternativo: obtener el token directamente del backend.
+    // Funciona cuando el servidor expone un endpoint de autenticación propio.
+    final backendToken = await _backendLogin(
+      email: email.trim().toLowerCase(),
+      password: password,
+      turnstileToken: turnstileToken,
+      ua: ua,
+    );
+    return backendToken ?? '';
+  }
+
+  /// Llama directamente al endpoint de login del backend (/api/backend/auth/login).
+  /// Si tiene éxito devuelve el JWT; si falla devuelve null sin lanzar.
+  Future<String?> _backendLogin({
+    required String email,
+    required String password,
+    required String turnstileToken,
+    required String ua,
+  }) async {
+    try {
+      final result = await http.postJson(
+        Uri.parse('$base/api/backend/auth/login'),
+        {
+          'email': email,
+          'password': password,
+          'turnstileToken': turnstileToken,
+        },
+        headers: {
+          'Origin': base,
+          'Referer': '$base/auth/login',
+          ...BrowserUa.mobileHints(ua),
+        },
+      );
+      final snippet =
+          result.text.length > 200 ? result.text.substring(0, 200) : result.text;
+      // ignore: avoid_print
+      print('[LOGIN] backendLogin HTTP ${result.status}: $snippet');
+      if (!result.ok) return null;
+      final data = jsonDecode(result.text);
+      if (data is! Map) return null;
+      return (data['token'] ??
+              data['access_token'] ??
+              data['accessToken'] ??
+              data['jwt'])
+          ?.toString();
+    } catch (e) {
+      // ignore: avoid_print
+      print('[LOGIN] backendLogin error: $e');
+      return null;
     }
-    return token;
   }
 
   String _loginError(String code) {

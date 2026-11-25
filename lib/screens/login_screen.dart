@@ -8,8 +8,8 @@ import 'captcha_screen.dart';
 ///
 /// El captcha de Cloudflare se resuelve en una pantalla aparte con un WebView
 /// (es el único sitio donde Turnstile funciona en un móvil) y de ahí se saca el
-/// token. El POST de credenciales lo hace la app, así que el sitio no ve un
-/// navegador integrado.
+/// token. El POST de credenciales lo hace Dart con los headers correctos
+/// (sec-ch-ua con "Google Chrome") para que el servidor no devuelva WebViewNotAllowed.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -41,7 +41,7 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      // 1) Captcha en el WebView.
+      // 1) Captcha en el WebView (HTML interceptado, sin detección de WebView).
       final captcha = await Navigator.of(context).push<CaptchaResult>(
         MaterialPageRoute(builder: (_) => const CaptchaScreen()),
       );
@@ -54,7 +54,8 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      // 2) POST desde Dart con ese token y ese mismo User-Agent.
+      // 2) POST de credenciales desde Dart con sec-ch-ua="Google Chrome" para
+      //    superar la comprobación de WebView del servidor.
       final api = AedexApi();
       api.http.seedCookies('aedexnox.com', captcha.cookies);
       final csrfToken = await api.csrf();
@@ -69,7 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
       await SessionService.saveCookies(
         api.http.exportCookies('aedexnox.com'),
       );
-      await SessionService.saveAccessToken(token);
+      await SessionService.saveAccessToken(token.isNotEmpty ? token : null);
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } catch (e) {

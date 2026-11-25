@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -8,7 +9,7 @@ import '../services/aedex_api.dart';
 import '../services/browser_ua.dart';
 
 class CaptchaResult {
-  final String token;
+  final String token;      // Turnstile token para pasar al login de Dart
   final String userAgent;
   final Map<String, String> cookies;
 
@@ -19,12 +20,11 @@ class CaptchaResult {
   });
 }
 
-/// Resuelve Cloudflare Turnstile sin cargar la web de Aedex.
+/// Resuelve Cloudflare Turnstile en HTML interceptado (sin código de detección).
 ///
-/// La web tiene una guardia que bloquea la página entera cuando detecta un
-/// WebView, y falsear el navegador desde JS rompe Turnstile. Así que se carga
-/// una página propia en el mismo origen (para que la sitekey valga) con el
-/// widget de Turnstile y nada más.
+/// El HTML propio no tiene la guardia de WebView del sitio. El token de
+/// Turnstile resultante se usa desde Dart para el POST al callback de NextAuth,
+/// que tiene los headers correctos (sec-ch-ua con "Google Chrome").
 class CaptchaScreen extends StatefulWidget {
   const CaptchaScreen({super.key});
 
@@ -33,24 +33,23 @@ class CaptchaScreen extends StatefulWidget {
 }
 
 class _CaptchaScreenState extends State<CaptchaScreen> {
-  static const String _origin = 'https://aedexnox.com/auth/login?callbackUrl=%2F';
+  static const String _origin =
+      'https://aedexnox.com/auth/login?callbackUrl=%2F';
   static const String _readScript = r'''
 (() => {
   try {
     return JSON.stringify({
       t: window.__aedexToken || '',
-      e: window.__aedexError || '',
-      w: !!document.querySelector('#ts iframe, iframe')
+      e: window.__aedexError || ''
     });
   } catch (e) { return '{}'; }
 })();
 ''';
 
+  final String _ua = BrowserUa.fallback;
   InAppWebViewController? _controller;
-  String _ua = '';
   String _sitekey = '';
   bool _busy = false;
-  bool _loaded = false;
   String _status = 'Preparando la verificación…';
 
   @override
@@ -72,66 +71,37 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
 <style>
 html,body{margin:0;height:100%;background:#0d0d1c;color:#fff;font-family:system-ui,-apple-system,sans-serif}
 .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;box-sizing:border-box;text-align:center}
-h1{font-size:17px;margin:0;font-weight:700}
-p{font-size:12px;color:#8b8ba3;margin:0}
+h1{font-size:17px;margin:0;font-weight:700}p{font-size:12px;color:#8b8ba3;margin:0}
 </style></head><body>
 <div class="wrap"><h1>Verificación</h1><p>Marca la casilla para continuar</p><div id="ts"></div></div>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer><\/script>
 <script>
 window.__aedexToken='';window.__aedexError='';
 var iv=setInterval(function(){
-  if(window.turnstile){
-    clearInterval(iv);
-    try{
-      window.turnstile.render('#ts',{
-        sitekey:'$sitekey',action:'login',theme:'dark',
-        callback:function(t){window.__aedexToken=t;},
-        'error-callback':function(e){window.__aedexError=String(e||'error');},
-        'expired-callback':function(){window.__aedexToken='';}
-      });
-    }catch(e){window.__aedexError=String(e);}
+  if(window.turnstile){clearInterval(iv);
+    try{window.turnstile.render('#ts',{
+      sitekey:'$sitekey',action:'login',theme:'dark',
+      callback:function(t){window.__aedexToken=t;},
+      'error-callback':function(e){window.__aedexError=String(e||'error');},
+      'expired-callback':function(){window.__aedexToken='';}
+    });}catch(e){window.__aedexError=String(e);}
   }
 },300);
 <\/script></body></html>''';
   }
 
-  Future<void> _setup(InAppWebViewController controller) async {
-    var ua = BrowserUa.fallback;
-    try {
-      ua = BrowserUa.clean(await InAppWebViewController.getDefaultUserAgent());
-    } catch (_) {}
-    _ua = ua;
-    await controller.setSettings(
-      settings: InAppWebViewSettings(
-        userAgent: ua,
-        javaScriptEnabled: true,
-        domStorageEnabled: true,
-        thirdPartyCookiesEnabled: true,
-        mediaPlaybackRequiresUserGesture: false,
-        requestedWithHeaderOriginAllowList: <String>{},
-      ),
-    );
-    // El primer about:blank ya está cargado; no hace falta ir a la web.
-  }
-
-
   String _plain(dynamic raw) {
     if (raw == null) return '';
     var v = raw.toString();
     if (v.startsWith('"') && v.endsWith('"')) {
-      try {
-        v = jsonDecode(v).toString();
-      } catch (_) {}
+      try { v = jsonDecode(v).toString(); } catch (_) {}
     }
     return v;
   }
 
   Future<void> _finish(String token) async {
     if (_busy) return;
-    setState(() {
-      _busy = true;
-      _status = 'Verificación lista. Entrando…';
-    });
+    setState(() { _busy = true; _status = 'Verificación lista. Entrando…'; });
     final cookies = <String, String>{};
     try {
       final list = await CookieManager.instance().getCookies(
@@ -177,7 +147,14 @@ var iv=setInterval(function(){
           Expanded(
             child: InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri('about:blank')),
+              initialUserScripts: UnmodifiableListView<UserScript>([
+                UserScript(
+                  source: "window.chrome = window.chrome || { runtime: {} };",
+                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                ),
+              ]),
               initialSettings: InAppWebViewSettings(
+                userAgent: _ua,
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
@@ -187,14 +164,17 @@ var iv=setInterval(function(){
               ),
               onWebViewCreated: (controller) {
                 _controller = controller;
-                _setup(controller);
+                controller.loadUrl(
+                  urlRequest: URLRequest(url: WebUri(_origin)),
+                );
               },
               shouldInterceptRequest: (controller, request) async {
                 final u = request.url.toString();
-                if (request.isForMainFrame == true &&
+                if (request.isForMainFrame != false &&
                     u.startsWith('https://aedexnox.com/auth/login')) {
-                  final key =
-                      _sitekey.isNotEmpty ? _sitekey : '0x4AAAAAAGKc99U551pyrOVT';
+                  final key = _sitekey.isNotEmpty
+                      ? _sitekey
+                      : '0x4AAAAAAGKc99U551pyrOVT';
                   return WebResourceResponse(
                     contentType: 'text/html',
                     contentEncoding: 'utf-8',
@@ -205,23 +185,16 @@ var iv=setInterval(function(){
               },
               onLoadStop: (controller, url) async {
                 final current = url?.toString() ?? '';
-                if (current == 'about:blank') {
-                  if (_loaded) return;
-                  _loaded = true;
-                  await controller.loadUrl(
-                    urlRequest: URLRequest(url: WebUri(_origin)),
-                  );
-                  return;
-                }
+                if (current == 'about:blank') return;
                 if (mounted) {
-                  setState(() => _status =
-                      'Marca la casilla de Cloudflare para continuar.');
+                  setState(() =>
+                      _status = 'Marca la casilla de Cloudflare para continuar.');
                 }
                 for (var i = 0; i < 60; i++) {
                   await Future<void>.delayed(const Duration(milliseconds: 800));
                   if (!mounted || _busy) return;
-                  final raw =
-                      await controller.evaluateJavascript(source: _readScript);
+                  final raw = await controller.evaluateJavascript(
+                      source: _readScript);
                   Map<String, dynamic> d = {};
                   try {
                     final text = _plain(raw);
@@ -236,7 +209,8 @@ var iv=setInterval(function(){
                     return;
                   }
                   if (err.isNotEmpty && mounted) {
-                    setState(() => _status = 'Cloudflare: $err. Pulsa Recargar.');
+                    setState(() =>
+                        _status = 'Cloudflare: $err. Pulsa Recargar.');
                   }
                 }
               },
@@ -247,8 +221,7 @@ var iv=setInterval(function(){
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: Text(
-                'Este paso solo resuelve el captcha. Tus datos se envían '
-                'después desde la app.',
+                'Este paso verifica tu identidad de forma segura.',
                 style: TextStyle(
                   fontSize: 11,
                   color: Colors.white.withValues(alpha: 0.45),
