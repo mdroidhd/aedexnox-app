@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../services/browser_ua.dart';
+import '../services/webview_spoof.dart';
 
 class CaptchaResult {
   final String token;
@@ -42,6 +43,7 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
 
   InAppWebViewController? _controller;
   String _ua = '';
+  bool _spoofed = false;
   bool _busy = false;
   String _status = 'Esperando la verificación de Cloudflare…';
   int _ticks = 0;
@@ -62,7 +64,9 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
         requestedWithHeaderOriginAllowList: <String>{},
       ),
     );
-    await controller.loadUrl(urlRequest: URLRequest(url: WebUri(_url)));
+    // about:blank primero para leer el UA-CH real y luego parchear antes de
+    // que la web cargue su JS (su guardia mira las marcas del navegador).
+    await controller.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
   }
 
   Future<void> _poll() async {
@@ -153,7 +157,38 @@ class _CaptchaScreenState extends State<CaptchaScreen> {
                 _setup(controller);
               },
               onLoadStop: (controller, url) async {
-                if ((url?.toString() ?? '') == 'about:blank') return;
+                final current = url?.toString() ?? '';
+                if (current == 'about:blank') {
+                  if (_spoofed) return;
+                  _spoofed = true;
+                  Map<String, dynamic> uaCh = {};
+                  try {
+                    final raw = await controller.evaluateJavascript(
+                      source: WebViewSpoof.capture,
+                    );
+                    var text = raw?.toString() ?? '';
+                    if (text.startsWith('"') && text.endsWith('"')) {
+                      text = jsonDecode(text).toString();
+                    }
+                    if (text.isNotEmpty && text != 'null') {
+                      uaCh = jsonDecode(text) as Map<String, dynamic>;
+                    }
+                  } catch (_) {}
+                  try {
+                    await controller.removeAllUserScripts();
+                    await controller.addUserScript(
+                      userScript: UserScript(
+                        source: WebViewSpoof.script(_ua, uaCh),
+                        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                        forMainFrameOnly: false,
+                      ),
+                    );
+                  } catch (_) {}
+                  await controller.loadUrl(
+                    urlRequest: URLRequest(url: WebUri(_url)),
+                  );
+                  return;
+                }
                 for (var i = 0; i < 40; i++) {
                   await Future<void>.delayed(const Duration(milliseconds: 700));
                   if (!mounted || _busy) return;
