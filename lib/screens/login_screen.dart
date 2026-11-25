@@ -27,38 +27,21 @@ class _LoginScreenState extends State<LoginScreen> {
   String _debug = '';
   String _postHeaders = '';
 
-  // UA limpio de reserva: si el WebView no nos da su UA (null) o sigue
-  // llevando marcadores, usamos este para que el POST nunca salga como WebView.
-  static const String _fallbackUaAndroid =
-      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
-  static const String _fallbackUaIos =
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  // El login se hace en modo escritorio: el sitio rechaza los UA de WebView y
+  // ademas el token de Turnstile va atado al UA, asi que el captcha y el POST
+  // tienen que salir con el mismo UA de Chrome de escritorio.
+  static const String _desktopUaFallback =
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36';
 
-  static final RegExp _wvMarker =
-      RegExp(r';\s*wv\b|Version/4\.0|Android WebView|\bwv\)', caseSensitive: false);
+  String get _fallbackUa => _desktopUaFallback;
 
-  bool _looksLikeWebView(String ua) => ua.isEmpty || _wvMarker.hasMatch(ua);
-
-  String get _fallbackUa => Platform.isAndroid ? _fallbackUaAndroid : _fallbackUaIos;
-
-  // ---------- 1) Limpiar SOLO los marcadores del UA real ----------
-  String _cleanUserAgent(String raw) {
-    if (raw.isEmpty) return raw;
-    if (Platform.isAndroid) {
-      return raw
-          .replaceAll(RegExp(r';\s*wv\b'), '')
-          .replaceAll(RegExp(r'\bVersion/4\.0\s+'), '');
-    }
-    if (Platform.isIOS) {
-      if (!raw.contains('Safari/') && raw.contains('Mobile/')) {
-        final m = RegExp(r'OS (\d+)_(\d+)').firstMatch(raw);
-        final ver = m != null ? '${m.group(1)}.${m.group(2)}' : '17.0';
-        return '${raw.replaceFirst('Mobile/', 'Version/$ver Mobile/')} Safari/604.1';
-      }
-    }
-    return raw;
+  /// UA de escritorio con la version real del motor del WebView.
+  String _desktopUa(String rawUa) {
+    final m = RegExp(r'Chrome/([0-9][0-9.]*)').firstMatch(rawUa);
+    final version = m?.group(1) ?? '144.0.0.0';
+    return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/$version Safari/537.36';
   }
 
   // ---------- 2) Captura el UA-CH real (antes de spoofear nada) ----------
@@ -86,9 +69,9 @@ class _LoginScreenState extends State<LoginScreen> {
       return {'brand': isWebView ? 'Google Chrome' : brand, 'version': version};
     }).toList();
 
-    final mobile = uaCh['mobile'] ?? Platform.isAndroid;
-    final platform =
-        uaCh['platform'] ?? (Platform.isAndroid ? 'Android' : 'iOS');
+    // Siempre escritorio: es lo que dice el UA y lo que acepta el servidor.
+    final mobile = false;
+    final platform = 'Linux';
 
     return '''
 (() => {
@@ -241,12 +224,12 @@ class _LoginScreenState extends State<LoginScreen> {
         {'brand': 'Not_A Brand', 'version': '24.0.0.0'},
       ],
       'fullVersion': full,
-      'platform': 'Android',
-      'platformVersion': '14.0.0',
-      'architecture': '',
-      'model': 'Pixel 8',
-      'mobile': true,
-      'bitness': '',
+      'platform': 'Linux',
+      'platformVersion': '6.1.0',
+      'architecture': 'x86',
+      'model': '',
+      'mobile': false,
+      'bitness': '64',
       'wow64': false,
     };
     try {
@@ -272,14 +255,11 @@ class _LoginScreenState extends State<LoginScreen> {
   // ---------- Flujo de preparación ----------
   Future<void> _prepare(InAppWebViewController controller) async {
     try {
-      var clean = '';
+      var clean = _desktopUaFallback;
       try {
-        clean = _cleanUserAgent(
-          await InAppWebViewController.getDefaultUserAgent(),
-        );
+        final raw = await InAppWebViewController.getDefaultUserAgent();
+        if (raw.isNotEmpty) clean = _desktopUa(raw);
       } catch (_) {}
-      // Si no hay UA o sigue pareciendo WebView, UA de reserva.
-      if (_looksLikeWebView(clean)) clean = _fallbackUa;
       _cleanUa = clean;
 
       if (_cleanUa.isNotEmpty) {
@@ -292,6 +272,11 @@ class _LoginScreenState extends State<LoginScreen> {
             mediaPlaybackRequiresUserGesture: false,
             requestedWithHeaderOriginAllowList: <String>{},
             useShouldOverrideUrlLoading: false,
+            useWideViewPort: true,
+            loadWithOverviewMode: true,
+            supportZoom: true,
+            builtInZoomControls: true,
+            displayZoomControls: false,
           ),
         );
       }
@@ -501,6 +486,11 @@ class _LoginScreenState extends State<LoginScreen> {
               initialUrlRequest: URLRequest(url: WebUri('about:blank')),
               initialSettings: InAppWebViewSettings(
                 userAgent: _cleanUa.isEmpty ? _fallbackUa : _cleanUa,
+                useWideViewPort: true,
+                loadWithOverviewMode: true,
+                supportZoom: true,
+                builtInZoomControls: true,
+                displayZoomControls: false,
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
