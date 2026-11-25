@@ -22,8 +22,25 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _saving = false;
   bool _preparing = true;
   bool _captured = false;
+  bool _uaRetry = false;
   String _cleanUa = '';
   String _debug = '';
+
+  // UA limpio de reserva: si el WebView no nos da su UA (null) o sigue
+  // llevando marcadores, usamos este para que el POST nunca salga como WebView.
+  static const String _fallbackUaAndroid =
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+  static const String _fallbackUaIos =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+      'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+
+  static final RegExp _wvMarker =
+      RegExp(r';\s*wv\b|Version/4\.0|Android WebView|\bwv\)', caseSensitive: false);
+
+  bool _looksLikeWebView(String ua) => ua.isEmpty || _wvMarker.hasMatch(ua);
+
+  String get _fallbackUa => Platform.isAndroid ? _fallbackUaAndroid : _fallbackUaIos;
 
   // ---------- 1) Limpiar SOLO los marcadores del UA real ----------
   String _cleanUserAgent(String raw) {
@@ -168,26 +185,45 @@ class _LoginScreenState extends State<LoginScreen> {
   static const String _debugScript = r'''
 (() => {
   try {
+    // UA real de la cabecera HTTP (navigator.userAgent lo falseamos, la
+    // cabecera no se puede falsear desde JS: es la que ve el servidor).
+    if (!window.__aedexHdrStarted) {
+      window.__aedexHdrStarted = true;
+      fetch('https://httpbin.org/headers', {cache: 'no-store'})
+        .then(r => r.json())
+        .then(j => {
+          const h = (j && j.headers) || {};
+          window.__aedexHdr = h['User-Agent'] || h['user-agent'] || '(vacia)';
+        })
+        .catch(() => { window.__aedexHdr = 'no comprobable'; });
+    }
     const ua = navigator.userAgent || '';
     const brands = (navigator.userAgentData && navigator.userAgentData.brands) || [];
-    const hasWebViewMarker = /;\s*wv\b|Version\/4\.0.*Chrome/i.test(ua);
-    const hasWebViewBrand = brands.some(b => b.brand.toLowerCase().includes('webview'));
-    const hasChrome = typeof window.chrome !== 'undefined';
+    const hdr = window.__aedexHdr || 'comprobando...';
+    const bad = /;\s*wv\b|Version\/4\.0|Android WebView/i.test(hdr);
     return JSON.stringify({
-      detected: hasWebViewMarker || hasWebViewBrand || !hasChrome,
-      ua: ua,
-      brands: brands.map(b => b.brand + '/' + b.version).join(', '),
-      chrome: hasChrome
+      hdr: hdr,
+      bad: bad,
+      nav: ua,
+      brands: brands.map(b => b.brand + '/' + b.version).join(', ')
     });
   } catch(e) { return ''; }
 })();
 ''';
 
+
   // ---------- Flujo de preparación ----------
   Future<void> _prepare(InAppWebViewController controller) async {
     try {
-      final rawUa = await InAppWebViewController.getDefaultUserAgent();
-      _cleanUa = _cleanUserAgent(rawUa);
+      var clean = '';
+      try {
+        clean = _cleanUserAgent(
+          await InAppWebViewController.getDefaultUserAgent(),
+        );
+      } catch (_) {}
+      // Si no hay UA o sigue pareciendo WebView, UA de reserva.
+      if (_looksLikeWebView(clean)) clean = _fallbackUa;
+      _cleanUa = clean;
 
       if (_cleanUa.isNotEmpty) {
         await controller.setSettings(
@@ -223,6 +259,7 @@ class _LoginScreenState extends State<LoginScreen> {
         if (text.isNotEmpty) uaCh = jsonDecode(text) as Map<String, dynamic>;
       } catch (_) {}
 
+      if (_cleanUa.isEmpty) _cleanUa = _fallbackUa;
       final script = _spoofScript(_cleanUa, uaCh);
 
       await controller.removeAllUserScripts();
@@ -258,7 +295,39 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final raw = await _controller?.evaluateJavascript(source: _debugScript);
       final text = _plain(raw);
-      if (mounted && text.isNotEmpty) setState(() => _debug = text);
+      if (!mounted || text.isEmpty) return;
+      Map<String, dynamic> d = {};
+      try {
+        d = jsonDecode(text) as Map<String, dynamic>;
+      } catch (_) {}
+      final hdr = (d['hdr'] ?? '') as String;
+      final bad = d['bad'] == true;
+      setState(() {
+        _debug = bad
+            ? 'UA ENVIADO: WebView (el servidor lo rechazara)\n$hdr'
+            : 'UA enviado: limpio\n$hdr';
+      });
+      // Auto-cura: si la cabecera sigue saliendo como WebView, forzamos el UA
+      // de reserva y recargamos una sola vez.
+      if (bad && !_uaRetry) {
+        _uaRetry = true;
+        _cleanUa = _fallbackUa;
+        final c = _controller;
+        if (c != null) {
+          await c.setSettings(
+            settings: InAppWebViewSettings(
+              userAgent: _cleanUa,
+              javaScriptEnabled: true,
+              domStorageEnabled: true,
+              thirdPartyCookiesEnabled: true,
+              mediaPlaybackRequiresUserGesture: false,
+              requestedWithHeaderOriginAllowList: <String>{},
+              useShouldOverrideUrlLoading: false,
+            ),
+          );
+          await _applySpoofAndLoad(c);
+        }
+      }
     } catch (_) {}
   }
 
@@ -334,7 +403,7 @@ class _LoginScreenState extends State<LoginScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               child: Text(
                 _debug,
-                maxLines: 2,
+                maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 9, color: Colors.white38),
               ),
@@ -343,6 +412,7 @@ class _LoginScreenState extends State<LoginScreen> {
             child: InAppWebView(
               initialUrlRequest: URLRequest(url: WebUri('about:blank')),
               initialSettings: InAppWebViewSettings(
+                userAgent: _cleanUa.isEmpty ? _fallbackUa : _cleanUa,
                 javaScriptEnabled: true,
                 domStorageEnabled: true,
                 thirdPartyCookiesEnabled: true,
