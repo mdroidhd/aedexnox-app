@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../services/aedex_api.dart';
 import '../services/session_service.dart';
-import 'captcha_screen.dart';
 
-/// Login de Aedex: formulario nativo en Dart.
+/// Login en la propia página del sitio, dentro del WebView.
 ///
-/// El captcha de Cloudflare se resuelve en una pantalla aparte con un WebView
-/// (es el único sitio donde Turnstile funciona en un móvil) y de ahí se saca el
-/// token. El POST de credenciales lo hace Dart con los headers correctos
-/// (sec-ch-ua con "Google Chrome") para que el servidor no devuelva WebViewNotAllowed.
+/// Es lo que hace la extensión de Mihon: el POST de credenciales y Turnstile
+/// los resuelve la web, y la app solo recoge la sesión después. El access_token
+/// que necesita el lector lo devuelve `/api/auth/session` con esa cookie.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -18,66 +17,140 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _email = TextEditingController();
-  final _password = TextEditingController();
-  bool _busy = false;
-  bool _verPassword = false;
-  String? _error;
+  static const String _loginUrl =
+      'https://aedexnox.com/auth/login?callbackUrl=%2F';
 
-  @override
-  void dispose() {
-    _email.dispose();
-    _password.dispose();
-    super.dispose();
+  /// Sin `Chrome/NNN`, sin `Version/4.0` y sin `; wv`: la guardia de la web no
+  /// lo clasifica como WebView y deja ver el formulario.
+  static const String _fallbackUa =
+      'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Mobile Safari/537.36';
+
+  static const String _patchScript = r'''
+(() => {
+  // El sitio rechaza el login si ve X-Requested-With (lo añade el WebView).
+  try {
+    const drop = (headers) => {
+      if (!headers) return;
+      if (headers instanceof Headers) {
+        headers.delete('X-Requested-With');
+      } else if (Array.isArray(headers)) {
+        for (let i = headers.length - 1; i >= 0; i--) {
+          if (String(headers[i][0]).toLowerCase() === 'x-requested-with') headers.splice(i, 1);
+        }
+      } else {
+        for (const k of Object.keys(headers)) {
+          if (k.toLowerCase() === 'x-requested-with') delete headers[k];
+        }
+      }
+    };
+    const of = window.fetch;
+    window.fetch = function(input, init) {
+      try { if (init) drop(init.headers); } catch (e) {}
+      return of.call(window, input, init);
+    };
+    const setH = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+      if (String(name).toLowerCase() === 'x-requested-with') return;
+      return setH.call(this, name, value);
+    };
+  } catch (e) {}
+})();
+''';
+
+  InAppWebViewController? _controller;
+  bool _busy = false;
+  bool _patched = false;
+  String _status = 'Inicia sesión en la página. La app recoge la sesión sola.';
+
+  Future<void> _prepare(InAppWebViewController controller) async {
+    var ua = _fallbackUa;
+    try {
+      final raw = await InAppWebViewController.getDefaultUserAgent();
+      if (raw.isNotEmpty) ua = _stripChrome(raw);
+    } catch (_) {}
+    await controller.setSettings(
+      settings: InAppWebViewSettings(
+        userAgent: ua,
+        javaScriptEnabled: true,
+        domStorageEnabled: true,
+        thirdPartyCookiesEnabled: true,
+        mediaPlaybackRequiresUserGesture: false,
+        requestedWithHeaderOriginAllowList: <String>{},
+        useShouldInterceptRequest: false,
+      ),
+    );
+    await controller.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
   }
 
-  Future<void> _submit() async {
+  String _stripChrome(String raw) {
+    var ua = raw.replaceAll(RegExp(r';\s*wv\b'), '');
+    ua = ua.replaceAll(RegExp(r'\bVersion/[0-9.]+\s*'), '');
+    ua = ua.replaceAll(RegExp(r'\bChrome/[0-9.]+\s*'), '');
+    ua = ua.replaceAll(RegExp(r'\s{2,}'), ' ');
+    return ua.trim();
+  }
+
+  Future<void> _inject(controller) async {
+    await controller.removeAllUserScripts();
+    await controller.addUserScript(
+      userScript: UserScript(
+        source: _patchScript,
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+        forMainFrameOnly: false,
+      ),
+    );
+  }
+
+  Future<void> _checkGuard() async {
+    try {
+      final raw = await _controller?.evaluateJavascript(
+        source: 'document.body ? document.body.innerText.slice(0, 400) : ""',
+      );
+      final text = raw?.toString() ?? '';
+      if (text.contains('Abre Aedex en tu navegador')) {
+        if (mounted) {
+          setState(() => _status =
+              'La web sigue detectando el navegador integrado. Pulsa Recargar.');
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _pickSession() async {
     if (_busy) return;
-    if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() {
       _busy = true;
-      _error = null;
+      _status = 'Recogiendo la sesión…';
     });
-
     try {
-      // 1) Captcha en el WebView (HTML interceptado, sin detección de WebView).
-      final captcha = await Navigator.of(context).push<CaptchaResult>(
-        MaterialPageRoute(builder: (_) => const CaptchaScreen()),
+      final values = <String, String>{};
+      final list = await CookieManager.instance().getCookies(
+        url: WebUri('https://aedexnox.com'),
       );
-      if (captcha == null) {
-        if (!mounted) return;
+      for (final c in list) {
+        if (c.name.isNotEmpty) values[c.name] = c.value;
+      }
+      if (!values.keys.any((k) => k.toLowerCase().contains('session-token'))) {
         setState(() {
           _busy = false;
-          _error = 'Verificación cancelada.';
+          _status = 'Aún no hay sesión. Termina el login en la página y '
+              'vuelve a pulsar Listo.';
         });
         return;
       }
 
-      // 2) POST de credenciales desde Dart con sec-ch-ua="Google Chrome" para
-      //    superar la comprobación de WebView del servidor.
+      await SessionService.saveCookies(values);
       final api = AedexApi();
-      api.http.seedCookies('aedexnox.com', captcha.cookies);
-      final csrfToken = await api.csrf();
-      final token = await api.login(
-        email: _email.text,
-        password: _password.text,
-        csrfToken: csrfToken,
-        turnstileToken: captcha.token,
-        userAgent: captcha.userAgent,
-      );
-
-      await SessionService.saveCookies(
-        api.http.exportCookies('aedexnox.com'),
-      );
-      await SessionService.saveAccessToken(token.isNotEmpty ? token : null);
-      // Si el sitio no devolvió token, el lector seguiría en modo invitado.
-      final ensured = await api.ensureAccessToken();
-      if (ensured == null || ensured.isEmpty) {
-        throw Exception(
-          'Sesión iniciada, pero el sitio no devolvió el access_token. '
-          'Vuelve a intentarlo.',
-        );
+      api.http.seedCookies('aedexnox.com', values);
+      final token = await api.ensureAccessToken();
+      if (token == null || token.isEmpty) {
+        setState(() {
+          _busy = false;
+          _status = 'Sesión guardada, pero el sitio no dio access_token. '
+              'Pulsa Listo otra vez en unos segundos.';
+        });
+        return;
       }
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -85,7 +158,7 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
       setState(() {
         _busy = false;
-        _error = e.toString().replaceFirst('Exception: ', '');
+        _status = 'No se pudo recoger la sesión: $e';
       });
     }
   }
@@ -99,136 +172,69 @@ class _LoginScreenState extends State<LoginScreen> {
         title: const Text('Cuenta de Aedex'),
         backgroundColor: const Color(0xFF0D0D1C),
         foregroundColor: Colors.white,
+        actions: [
+          TextButton(
+            onPressed: _busy ? null : _pickSession,
+            child: const Text('Listo'),
+          ),
+          IconButton(
+            tooltip: 'Recargar',
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _controller?.reload(),
+          ),
+        ],
       ),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    '¡Gracias por volver!',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'Entra con tu cuenta de Aedex para leer sin límites.',
-                    style: TextStyle(color: Colors.white70, fontSize: 13),
-                  ),
-                  const SizedBox(height: 24),
-                  TextFormField(
-                    controller: _email,
-                    keyboardType: TextInputType.emailAddress,
-                    autofillHints: const [AutofillHints.email],
-                    style: const TextStyle(color: Colors.white),
-                    decoration: _decoration('Correo electrónico', Icons.mail, pink),
-                    validator: (v) {
-                      final t = (v ?? '').trim();
-                      if (t.isEmpty) return 'Escribe tu correo';
-                      if (!t.contains('@') || !t.contains('.')) {
-                        return 'Correo no válido';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 14),
-                  TextFormField(
-                    controller: _password,
-                    obscureText: !_verPassword,
-                    autofillHints: const [AutofillHints.password],
-                    style: const TextStyle(color: Colors.white),
-                    decoration: _decoration('Contraseña', Icons.lock, pink).copyWith(
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _verPassword ? Icons.visibility_off : Icons.visibility,
-                          color: Colors.white38,
-                        ),
-                        onPressed: () => setState(() => _verPassword = !_verPassword),
-                      ),
-                    ),
-                    validator: (v) =>
-                        (v ?? '').isEmpty ? 'Escribe tu contraseña' : null,
-                    onFieldSubmitted: (_) => _submit(),
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 14),
-                    Text(
-                      _error!,
-                      style: const TextStyle(color: Color(0xFFFF6B8B), fontSize: 13),
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    height: 52,
-                    child: FilledButton(
-                      onPressed: _busy ? null : _submit,
-                      style: FilledButton.styleFrom(
-                        backgroundColor: pink,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                      ),
-                      child: _busy
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : const Text(
-                              'Entrar',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Al pulsar Entrar se abre la verificación de Cloudflare. '
-                    'Marca la casilla y el login se completa solo.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white38, fontSize: 11),
-                  ),
-                ],
-              ),
+      body: Column(
+        children: [
+          Container(
+            width: double.infinity,
+            color: pink.withValues(alpha: 0.12),
+            padding: const EdgeInsets.all(12),
+            child: Text(
+              _status,
+              style: const TextStyle(fontSize: 12, color: Colors.white70),
             ),
           ),
-        ),
+          Expanded(
+            child: InAppWebView(
+              initialUrlRequest: URLRequest(url: WebUri('about:blank')),
+              initialSettings: InAppWebViewSettings(
+                userAgent: _fallbackUa,
+                javaScriptEnabled: true,
+                domStorageEnabled: true,
+                thirdPartyCookiesEnabled: true,
+                mediaPlaybackRequiresUserGesture: false,
+                requestedWithHeaderOriginAllowList: <String>{},
+              ),
+              onWebViewCreated: (controller) {
+                _controller = controller;
+                _prepare(controller);
+              },
+              onLoadStop: (controller, url) async {
+                final current = url?.toString() ?? '';
+                if (current == 'about:blank') {
+                  if (_patched) return;
+                  _patched = true;
+                  await _inject(controller);
+                  await controller.loadUrl(
+                    urlRequest: URLRequest(url: WebUri(_loginUrl)),
+                  );
+                  return;
+                }
+                if (current.contains('/auth/login')) {
+                  await _checkGuard();
+                  return;
+                }
+                // Ya no estamos en el login: la web ha iniciado sesión.
+                if (mounted) {
+                  setState(() => _status = 'Sesión iniciada. Recogiendo…');
+                }
+                await _pickSession();
+              },
+            ),
+          ),
+        ],
       ),
-    );
-  }
-
-  InputDecoration _decoration(String hint, IconData icon, Color accent) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: Colors.white38),
-      prefixIcon: Icon(icon, color: Colors.white38),
-      filled: true,
-      fillColor: const Color(0xFF161625),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: BorderSide.none,
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: const BorderSide(color: Color(0xFF2A2A3E)),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(16),
-        borderSide: BorderSide(color: accent, width: 1.5),
-      ),
-      errorStyle: const TextStyle(color: Color(0xFFFF6B8B)),
     );
   }
 }
