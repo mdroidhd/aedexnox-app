@@ -349,6 +349,19 @@ class AedexApi {
     return null;
   }
 
+  /// Devuelve el access_token guardado y, si no hay, lo pide a /api/auth/session
+  /// con las cookies de la sesión. Lo guarda cuando lo consigue.
+  Future<String?> ensureAccessToken() async {
+    final saved = SessionService.accessToken;
+    if (saved != null && saved.isNotEmpty) return saved;
+    final fresh = await sessionToken();
+    if (fresh != null && fresh.isNotEmpty) {
+      await SessionService.saveAccessToken(fresh);
+      return fresh;
+    }
+    return null;
+  }
+
   Future<String> csrf() async {
     final result = await http.get(
       Uri.parse('$base/api/auth/csrf'),

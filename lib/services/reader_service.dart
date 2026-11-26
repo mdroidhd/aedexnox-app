@@ -397,6 +397,10 @@ class ReaderService {
             .replaceFirst(RegExp(r'\.0$'), '') ??
         chapter;
 
+    // El Bearer es lo que levanta el límite de 3 capítulos; si el login no
+    // guardó el token, se pide aquí con las cookies de la sesión.
+    final accessToken = await api.ensureAccessToken();
+
     String? capToken = await _solveCap(system);
     await _redeemPass(capToken, system.capSitekey, ax);
 
@@ -445,13 +449,17 @@ class ReaderService {
 
     if (response == null || !response.ok) {
       final body = response?.text ?? '';
+      final tokLen = (accessToken ?? '').length;
+      final tokInfo = tokLen > 0 ? 'token sí ($tokLen)' : 'token no';
       if (body.contains('LOGIN_REQUIRED')) {
-        throw const LoginRequiredException(
-          'Máximo 3 capítulos como invitado. Inicia sesión para seguir.',
+        throw LoginRequiredException(
+          accessToken == null || accessToken.isEmpty
+              ? 'No hay token de sesión ($tokInfo). Vuelve a iniciar sesión.'
+              : 'Máximo 3 capítulos: el sitio no aceptó el token ($tokInfo).',
         );
       }
       throw ReaderException(
-        'El lector respondió HTTP ${response?.status}. $body',
+        'El lector respondió HTTP ${response?.status}. $body ($tokInfo)',
       );
     }
 
