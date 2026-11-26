@@ -20,11 +20,13 @@ class _LoginScreenState extends State<LoginScreen> {
   static const String _loginUrl =
       'https://aedexnox.com/auth/login?callbackUrl=%2F';
 
-  /// Sin `Chrome/NNN`, sin `Version/4.0` y sin `; wv`: la guardia de la web no
-  /// lo clasifica como WebView y deja ver el formulario.
+  /// UA de Chrome móvil limpio: sin `; wv` y sin `Version/4.0`.
+  ///
+  /// El servidor rechaza con WebViewNotAllowed cualquier UA que no lleve
+  /// `Chrome/<n>` (probado), así que el truco de quitarlo no vale aquí.
   static const String _fallbackUa =
       'Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Mobile Safari/537.36';
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
   static const String _patchScript = r'''
 (() => {
@@ -67,7 +69,7 @@ class _LoginScreenState extends State<LoginScreen> {
     var ua = _fallbackUa;
     try {
       final raw = await InAppWebViewController.getDefaultUserAgent();
-      if (raw.isNotEmpty) ua = _stripChrome(raw);
+      if (raw.isNotEmpty) ua = _cleanUa(raw);
     } catch (_) {}
     await controller.setSettings(
       settings: InAppWebViewSettings(
@@ -83,10 +85,16 @@ class _LoginScreenState extends State<LoginScreen> {
     await controller.loadUrl(urlRequest: URLRequest(url: WebUri('about:blank')));
   }
 
-  String _stripChrome(String raw) {
+  /// Limpia el UA del WebView dejando la versión real de Chrome.
+  String _cleanUa(String raw) {
+    final version =
+        RegExp(r'Chrome/([0-9][0-9.]*)').firstMatch(raw)?.group(1) ??
+            '131.0.0.0';
     var ua = raw.replaceAll(RegExp(r';\s*wv\b'), '');
     ua = ua.replaceAll(RegExp(r'\bVersion/[0-9.]+\s*'), '');
-    ua = ua.replaceAll(RegExp(r'\bChrome/[0-9.]+\s*'), '');
+    if (!ua.contains('Chrome/')) {
+      ua = ua.replaceFirst('Mobile Safari', 'Chrome/$version Mobile Safari');
+    }
     ua = ua.replaceAll(RegExp(r'\s{2,}'), ' ');
     return ua.trim();
   }
