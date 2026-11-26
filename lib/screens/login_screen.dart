@@ -71,6 +71,14 @@ class _LoginScreenState extends State<LoginScreen> {
         api.http.exportCookies('aedexnox.com'),
       );
       await SessionService.saveAccessToken(token.isNotEmpty ? token : null);
+      // Si el sitio no devolvió token, el lector seguiría en modo invitado.
+      final ensured = await api.ensureAccessToken();
+      if (ensured == null || ensured.isEmpty) {
+        throw Exception(
+          'Sesión iniciada, pero el sitio no devolvió el access_token. '
+          'Vuelve a intentarlo.',
+        );
+      }
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } catch (e) {
