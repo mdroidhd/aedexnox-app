@@ -76,6 +76,14 @@ class AedexHttp {
     }
   }
 
+  /// El lector del sitio manda el access_token como Bearer; con cookies solas
+  /// sigue contando como invitado y corta a los 3 capítulos.
+  Map<String, String> _bearerHeader() {
+    final token = SessionService.accessToken;
+    if (token == null || token.isEmpty) return const {};
+    return {'Authorization': 'Bearer $token'};
+  }
+
   Map<String, String> _apiHeaders() {
     final headers = <String, String>{
       'System': 'aedex',
@@ -179,6 +187,7 @@ class AedexHttp {
       'Accept': lector ? '*/*' : 'text/html,application/xhtml+xml',
       ...?headers,
       if (lector) ...lectoHeaders,
+      if (lector) ..._bearerHeader(),
       if (api) ..._apiHeaders(),
     };
     return send('GET', uri, headers: all, keepBytes: keepBytes);
@@ -196,6 +205,7 @@ class AedexHttp {
       'Accept': lector ? '*/*' : 'application/json',
       ...?headers,
       if (lector) ...lectoHeaders,
+      if (lector) ..._bearerHeader(),
       if (api) ..._apiHeaders(),
     };
     return send(

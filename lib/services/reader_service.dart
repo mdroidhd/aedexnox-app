@@ -401,7 +401,8 @@ class ReaderService {
     await _redeemPass(capToken, system.capSitekey, ax);
 
     HttpResult? response;
-    for (var attempt = 0; attempt < 2; attempt++) {
+    var refreshedToken = false;
+    for (var attempt = 0; attempt < 3; attempt++) {
       final now = DateTime.now().millisecondsSinceEpoch;
       final proof = ax.proof('c', '$slug/$chapterNumber', now);
       response = await http.postJson(
@@ -409,9 +410,9 @@ class ReaderService {
         {
           'slug': slug,
           'chapter': chapterNumber,
-          // Sin modo cuando el usuario está logueado; el servidor autentica
-          // con la cookie de sesión. 'gratis' fuerza el límite de invitado.
-          if (!SessionService.isLoggedIn) 'modo': 'gratis',
+          // El sitio manda siempre "gratis": quien levanta el límite de 3
+          // capítulos es el Bearer del access_token, no este campo.
+          'modo': 'gratis',
         },
         lector: true,
         headers: {
@@ -421,10 +422,23 @@ class ReaderService {
         },
       );
 
-      if (response.status == 403 && attempt == 0) {
+      final body = response.text;
+      if (response.status == 403 && body.contains('READER_PASS_REQUIRED')) {
+        // Pase caducado o emitido para otra IP: se resuelve uno nuevo.
         capToken = await _solveCap(system);
         await _redeemPass(capToken, system.capSitekey, ax);
         continue;
+      }
+      if (response.status == 403 && body.contains('LOGIN_REQUIRED')) {
+        if (!refreshedToken) {
+          refreshedToken = true;
+          final fresh = await api.sessionToken();
+          if (fresh != null && fresh.isNotEmpty) {
+            await SessionService.saveAccessToken(fresh);
+            continue;
+          }
+        }
+        break;
       }
       break;
     }
