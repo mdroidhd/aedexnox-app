@@ -450,7 +450,10 @@ class ReaderService {
     if (response == null || !response.ok) {
       final body = response?.text ?? '';
       final tokLen = (accessToken ?? '').length;
-      final tokInfo = tokLen > 0 ? 'token sí ($tokLen)' : 'token no';
+      final hasSessionCookie = SessionService.cookies.keys
+          .any((k) => k.toLowerCase().contains('session-token'));
+      final tokInfo = 'token ${tokLen > 0 ? 'sí ($tokLen)' : 'no'}'
+          ', cookie de sesión ${hasSessionCookie ? 'sí' : 'no'}';
       if (body.contains('LOGIN_REQUIRED')) {
         throw LoginRequiredException(
           accessToken == null || accessToken.isEmpty
